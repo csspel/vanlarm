@@ -111,9 +111,7 @@ void loop() {
       modemInitUartAndPins();
       nextAliveMs   = millis();          // trigga första direkt
       currentReason = CommReason::ALIVE; // så vi vet varför
-      changeState(SystemState::IDLE);
-
-
+      
       // För säkerhets skull: init MQTT-klient (bara interna objekt)
       mqttSetup();
 
@@ -189,6 +187,8 @@ void loop() {
       }
 
       // Här skulle man kunna lyssna på SUB-topics om vi hade några.
+      // Steg 3: håll fönstret öppet och lyssna
+      mqttLoopFor(MQTT_ONLINE_WINDOW_MS);
       // För STEP 2 gör vi inget mer: avsluta fönstret.
       changeState(SystemState::MQTT_DISCONNECT);
 
@@ -211,6 +211,5 @@ void loop() {
     }
   }
 
-  mqttLoop();    // i framtiden: hålla SUB-connection aktiv under window
   delay(10);
 }

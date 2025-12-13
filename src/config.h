@@ -38,6 +38,15 @@ static const char MQTT_PASSWORD[]  = "hemautomation";    // annars lämna tomt
 // Topic för alive
 static const char MQTT_TOPIC_ALIVE[] = "van/ellie/tele/alive";
 
+// Downlink topics (HA -> device)
+static const char MQTT_TOPIC_DOWNLINK[]    = "van/ellie/cmd/downlink";
+
+// Uplink ack (device -> HA)
+static const char MQTT_TOPIC_ACK[]         = "van/ellie/ack";
+
+// Hur länge vi håller MQTT_ONLINE öppet för SUBs (Steg 3)
+constexpr uint32_t MQTT_ONLINE_WINDOW_MS   = 8000UL;   // 8 sek
+
 static const char DEVICE_ID[] = "van_ellie";
 
 // --- Timers -----------------------------------------------

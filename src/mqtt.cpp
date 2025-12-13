@@ -9,6 +9,101 @@ static Client*       netClient   = nullptr;
 static PubSubClient* mqttClient  = nullptr;
 static uint32_t msgCounter = 0;
 
+static String lastDownlinkRaw;
+static uint32_t lastAckMsgId = 0;
+
+static String jsonGetString(const String& json, const char* key) {
+  String k = String("\"") + key + "\":";
+  int i = json.indexOf(k);
+  if (i < 0) return "";
+  i += k.length();
+
+  // hoppa whitespace
+  while (i < (int)json.length() && (json[i] == ' ' || json[i] == '\t')) i++;
+
+  // måste börja med "
+  if (i >= (int)json.length() || json[i] != '"') return "";
+  i++;
+  int j = json.indexOf('"', i);
+  if (j < 0) return "";
+  return json.substring(i, j);
+}
+
+static uint32_t jsonGetUInt(const String& json, const char* key) {
+  String k = String("\"") + key + "\":";
+  int i = json.indexOf(k);
+  if (i < 0) return 0;
+  i += k.length();
+  while (i < (int)json.length() && (json[i] == ' ' || json[i] == '\t')) i++;
+
+  // tillåt "123" eller 123
+  if (i < (int)json.length() && json[i] == '"') i++;
+
+  uint32_t val = 0;
+  while (i < (int)json.length() && isDigit(json[i])) {
+    val = val * 10 + (json[i] - '0');
+    i++;
+  }
+  return val;
+}
+
+static void mqttPublishAck(uint32_t ackMsgId, const char* status, const char* detail = "") {
+  // {"device_id":"...","type":"ACK","ack_msg_id":1234,"status":"OK","detail":"...","profile":"ALARM"}
+  const ProfileConfig& p = currentProfile();
+
+  String payload = "{";
+  payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  payload += "\"type\":\"ACK\",";
+  payload += "\"ack_msg_id\":" + String(ackMsgId) + ",";
+  payload += "\"status\":\"" + String(status) + "\",";
+  payload += "\"detail\":\"" + String(detail) + "\",";
+  payload += "\"profile\":\"" + String(p.name) + "\"";
+  payload += "}";
+
+  mqttClient->publish(MQTT_TOPIC_ACK, payload.c_str());
+  logSystem("MQTT: ACK published payload=" + payload);
+}
+
+static void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
+  String t(topic);
+  String msg;
+  msg.reserve(length);
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+
+  // --- FIX: ignore retained clear (empty payload) ---
+  msg.trim();
+  if (msg.length() == 0) {
+    return;  // HA cleared retained cmd/downlink with empty payload
+  }
+
+  logSystem("MQTT: RX topic=" + t + " payload=" + msg);
+  lastDownlinkRaw = msg;
+
+  if (t != MQTT_TOPIC_DOWNLINK) return;
+
+  uint32_t ackId = jsonGetUInt(msg, "ack_msg_id");
+  String desired = jsonGetString(msg, "desired_profile");
+
+  if (ackId == 0) {
+    // vi kräver msg_id för spårbarhet
+    mqttPublishAck(0, "ERROR", "missing_ack_msg_id");
+    return;
+  }
+
+  if (desired.length() > 0) {
+    ProfileId pid;
+    if (profileFromString(desired, pid)) {
+      setProfile(pid);
+      mqttPublishAck(ackId, "OK", "profile_set");
+      mqttPublishAlive();   // eller mqttPublishTelemetry() om du senare byter namn
+    } else {
+      mqttPublishAck(ackId, "ERROR", "unknown_profile");
+    }
+  } else {
+    mqttPublishAck(ackId, "OK", "no_profile_change");
+  }
+}
+
 void mqttSetup() {
   if (!netClient) {
     netClient = &modemGetClient();
@@ -16,6 +111,7 @@ void mqttSetup() {
   if (!mqttClient) {
     mqttClient = new PubSubClient(*netClient);
     mqttClient->setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+    mqttClient->setCallback(mqttCallback);
   }
 }
 
@@ -39,6 +135,8 @@ bool mqttConnect() {
   }
 
   logSystem("MQTT: connected OK");
+  mqttClient->subscribe(MQTT_TOPIC_DOWNLINK);
+  logSystem("MQTT: subscribed " + String(MQTT_TOPIC_DOWNLINK));
   return true;
 }
 
@@ -98,5 +196,17 @@ void mqttDisconnect() {
   if (mqttClient && mqttClient->connected()) {
     logSystem("MQTT: disconnect");
     mqttClient->disconnect();
+  }
+}
+bool mqttIsConnected() {
+  return mqttClient && mqttClient->connected();
+}
+
+void mqttLoopFor(uint32_t durationMs) {
+  if (!mqttClient || !mqttClient->connected()) return;
+  uint32_t start = millis();
+  while (millis() - start < durationMs) {
+    mqttClient->loop();
+    delay(10);
   }
 }
