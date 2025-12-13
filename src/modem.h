@@ -19,3 +19,6 @@ bool modemConnectData(const char *apn,
 
 // MQTT-klient (TinyGSMClient-wrapper)
 Client& modemGetClient();
+
+// Läs modemets klocka via AT+CCLK?  -> returnerar råsträng "yy/MM/dd,hh:mm:ss±zz"
+bool modemGetCclk(String &outCclk, uint32_t timeoutMs = 1500);

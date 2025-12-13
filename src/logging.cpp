@@ -1,53 +1,56 @@
 #include "logging.h"
 #include "config.h"
+#include "time_manager.h"
 
 #include <SD_MMC.h>
 
-static bool   sdOk      = false;
-static String logPath   = "/system.log";
+static bool   sdOk    = false;
+static String logPath = "/system.log";
 
 void loggingInit() {
-    Serial.println("LOG: init SD_MMC...");
+  Serial.println("LOG: init SD_MMC...");
 
-    // Sätt pinnar för T-SIM7080G-S3
-    SD_MMC.setPins(PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0);
+  // Sätt pinnar för T-SIM7080G-S3
+  SD_MMC.setPins(PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0);
 
-    // 1-bit-läge, ingen autoformat
-    if (!SD_MMC.begin("/sdcard", true)) {
-        Serial.println("LOG: SD_MMC init FAILED");
-        sdOk = false;
-        return;
-    }
+  // 1-bit-läge, ingen autoformat
+  if (!SD_MMC.begin("/sdcard", true)) {
+    Serial.println("LOG: SD_MMC.begin FAILED (no SD?)");
+    sdOk = false;
+    return;
+  }
 
-    sdOk = true;
-    Serial.println("LOG: SD_MMC init OK");
+  sdOk = true;
+  Serial.println("LOG: SD OK, path=" + logPath);
 
-    // Skriv en enkel BOOT-marker i loggen
-    File f = SD_MMC.open(logPath, FILE_APPEND);
-    if (f) {
-        f.println();
-        f.println("===== BOOT =====");
-        f.close();
-    }
+  // Skapa fil om den inte finns
+  File f = SD_MMC.open(logPath, FILE_APPEND);
+  if (f) f.close();
+  else Serial.println("LOG: open(system.log) FAILED");
+}
+
+static String logPrefix() {
+  uint32_t up = millis() / 1000;
+
+  if (timeIsValid()) {
+    // Lokal tid för läsbarhet (Stockholm), uptime för felsökning
+    return timeDateLocal() + " " + timeClockLocal() + " | " + String(up) + "s | ";
+  }
+  return String("--no-time-- | ") + String(up) + "s | ";
 }
 
 void logSystem(const String &msg) {
-    // Lägg till uptime i sekunder i början av raden
-    unsigned long sec = millis() / 1000;
-    String line = String(sec) + "s " + msg;
+  String line = logPrefix() + msg;
 
-    // Alltid till Serial
-    Serial.println(line);
+  Serial.println(line);
 
-    if (!sdOk) {
-        return;
-    }
+  if (!sdOk) return;
 
-    File f = SD_MMC.open(logPath, FILE_APPEND);
-    if (!f) {
-        Serial.println("LOG: open(system.log) FAILED");
-        return;
-    }
-    f.println(line);
-    f.close();
+  File f = SD_MMC.open(logPath, FILE_APPEND);
+  if (!f) {
+    Serial.println("LOG: open(system.log) FAILED");
+    return;
+  }
+  f.println(line);
+  f.close();
 }

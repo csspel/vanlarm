@@ -4,6 +4,7 @@
 #include "modem.h"
 #include "profiles.h"
 #include <PubSubClient.h>
+#include "time_manager.h"
 
 static Client*       netClient   = nullptr;
 static PubSubClient* mqttClient  = nullptr;
@@ -112,8 +113,14 @@ void mqttSetup() {
     mqttClient = new PubSubClient(*netClient);
     mqttClient->setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
     mqttClient->setCallback(mqttCallback);
+
+    // ✅ FIX: större buffer för längre JSON-payload
+    mqttClient->setBufferSize(512);   // testa 512 först, annars 1024
+    mqttClient->setKeepAlive(30);     // valfritt, men bra över LTE
+    mqttClient->setSocketTimeout(10); // valfritt
   }
 }
+
 
 bool mqttConnect() {
   if (!mqttClient) mqttSetup();
@@ -149,32 +156,33 @@ bool mqttPublishAlive() {
   uint32_t upSeconds = millis() / 1000;
   const ProfileConfig& p = currentProfile();
 
-  // msg_id som enkel räknare – förbättras senare (t.ex. inkludera boot-id)
   msgCounter++;
   String msgId = String(msgCounter);
 
-  // timestamp i UTC (ISO-ish)
-  time_t now = time(nullptr);
-  struct tm t;
-  gmtime_r(&now, &t);
-  char tsBuf[25];
-  // YYYY-MM-DDTHH:MM:SSZ
-  snprintf(tsBuf, sizeof(tsBuf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-           t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
-           t.tm_hour, t.tm_min, t.tm_sec);
+  const bool   timeValid = timeIsValid();
+  const String isoUtc    = timeIsoUtc();
 
-  // Bygg JSON enligt din dataspec (light-version)
+  const char* src = "NONE";
+  if (timeGetSource() == TimeSource::MODEM) src = "MODEM";
+  else if (timeGetSource() == TimeSource::NTP) src = "NTP";
+
   String payload = "{";
   payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
   payload += "\"msg_id\":\""   + msgId + "\",";
   payload += "\"type\":\"ALIVE\",";
-  payload += "\"timestamp\":\"" + String(tsBuf) + "\",";
+  payload += "\"timestamp\":\"" + isoUtc + "\",";
+  payload += "\"epoch_utc\":" + String(timeEpochUtc()) + ",";
+  payload += "\"time_valid\":" + String(timeValid ? "true" : "false") + ",";
+  payload += "\"time_source\":\"" + String(src) + "\",";
+  payload += "\"date_local\":\"" + timeDateLocal() + "\",";
+  payload += "\"time_local\":\"" + timeClockLocal() + "\",";
   payload += "\"profile\":\"" + String(p.name) + "\",";
   payload += "\"uptime_s\":" + String(upSeconds);
   payload += "}";
 
   logSystem("MQTT: publishing alive to " + String(MQTT_TOPIC_ALIVE) +
             " payload=" + payload);
+  logSystem("MQTT: alive payload bytes=" + String(payload.length()));
 
   bool ok = mqttClient->publish(MQTT_TOPIC_ALIVE, payload.c_str());
   if (!ok) {

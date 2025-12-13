@@ -225,3 +225,50 @@ bool modemConnectData(const char *apn,
 Client& modemGetClient() {
     return gsmClient;
 }
+
+
+// ---- Clock via AT+CCLK? -------------------------------------------------
+bool modemGetCclk(String &outCclk, uint32_t timeoutMs) {
+    // NOTE: SerialAT is the same UART used by TinyGSM.
+    // We do a minimal, short query; this works well right after network attach.
+    while (SerialAT.available()) SerialAT.read();
+
+    SerialAT.println("AT+CCLK?");
+    uint32_t start = millis();
+    String line;
+    String payload;
+
+    while (millis() - start < timeoutMs) {
+        while (SerialAT.available()) {
+            char c = (char)SerialAT.read();
+            if (c == '\r') continue;
+            if (c == '\n') {
+                line.trim();
+                if (line.length() > 0) {
+                    // Expected line: +CCLK: "25/12/13,19:22:50+04"
+                    if (line.startsWith("+CCLK:")) {
+                        payload = line;
+                    }
+                    if (line == "OK") {
+                        start = timeoutMs + start; // break outer
+                        break;
+                    }
+                }
+                line = "";
+            } else {
+                line += c;
+            }
+        }
+        delay(10);
+    }
+
+    if (!payload.startsWith("+CCLK:")) return false;
+
+    int q1 = payload.indexOf('"');
+    int q2 = payload.lastIndexOf('"');
+    if (q1 < 0 || q2 <= q1) return false;
+
+    outCclk = payload.substring(q1 + 1, q2);
+    outCclk.trim();
+    return outCclk.length() >= 17; // rough sanity
+}
