@@ -157,6 +157,7 @@ void loop() {
 
     case SystemState::NET_CONNECT: {
       logSystem("NET_CONNECT: starting network attach");
+      modemRfOn();
 
       NetResult net;
       bool ok = modemConnectData(APN, NET_REG_TIMEOUT_MS, DATA_ATTACH_TIMEOUT_MS, net);
@@ -259,6 +260,7 @@ void loop() {
 
     case SystemState::NET_DISCONNECT: {
       logSystem("NET_DISCONNECT: end of comm window (no-op in STEP 2)");
+      modemRfOff();
       changeState(SystemState::IDLE);
       break;
     }

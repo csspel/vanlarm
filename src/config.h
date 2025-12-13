@@ -14,6 +14,7 @@
 #define BOARD_I2C_SDA 15
 #define BOARD_I2C_SCL 7
 
+
 // SD_MMC (1-bit)
 static const int PIN_SD_CLK = 38;
 static const int PIN_SD_CMD = 39;
@@ -43,6 +44,9 @@ static const char MQTT_TOPIC_DOWNLINK[]    = "van/ellie/cmd/downlink";
 
 // Uplink ack (device -> HA)
 static const char MQTT_TOPIC_ACK[]         = "van/ellie/ack";
+
+static const char MQTT_TOPIC_VERSION[]     = "van/ellie/tele/version";
+
 
 // Hur länge vi håller MQTT_ONLINE öppet för SUBs (Steg 3)
 constexpr uint32_t MQTT_ONLINE_WINDOW_MS   = 8000UL;   // 8 sek

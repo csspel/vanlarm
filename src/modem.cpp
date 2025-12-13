@@ -102,25 +102,32 @@ static bool modemActivateData(uint32_t timeoutMs) {
             return true;
         }
 
-        // Här ger vi faktiskt upp
         logSystem("MODEM: data attach really FAILED");
         return false;
     }
 
-    // Om CNACT svarade OK, verifiera GPRS för loggens skull
     bool gprsAfter = modem.isGprsConnected();
     logSystem(String("MODEM: GPRS status after CNACT OK: ") + (gprsAfter ? "connected" : "NOT connected"));
-
-    return gprsAfter;  // normalt true, men skulle det vara false loggar vi åtminstone
+    return gprsAfter;
 }
 
+// --- CFUN helper (rätt sätt i din kodbas) ---
+static bool modemSetCfun(uint8_t mode, uint32_t timeoutMs) {
+    // mode: 0 = RF off, 1 = full functionality
+    modem.sendAT("+CFUN=", mode);
+    int r = modem.waitResponse(timeoutMs);
+    if (r == 1) return true;
+
+    // logga men låt caller avgöra om det är fatal
+    logSystem(String("MODEM: CFUN=") + String(mode) + " failed (waitResponse=" + String(r) + ")");
+    return false;
+}
 
 // ====== publika funktioner ======
 
 void modemInitUartAndPins() {
     logSystem("MODEM: init UART & pins");
 
-    // Starta UART mot modemet
     SerialAT.begin(115200, SERIAL_8N1, BOARD_MODEM_RXD_PIN, BOARD_MODEM_TXD_PIN);
 
     pinMode(BOARD_MODEM_PWR_PIN, OUTPUT);
@@ -148,27 +155,24 @@ bool modemConnectData(const char *apn,
         return false;
     }
 
-    // 2) Försök vänta in SIM READY, men gör det som en *mjuk* check
+    // 2) Mjuk SIM-check
     if (!modemWaitForSimReady(20000UL)) {
         logSystem("MODEM: SIM check failed, fortsätter ändå (litar på nätuppkopplingstest)");
-        // Vi sätter INTE out.err här, vi bara loggar och går vidare
     }
 
-    // 3) Kolla om vi redan är nätregistrerade
+    // 3) Kolla nätregistrering
     bool alreadyNet = modem.isNetworkConnected();
     if (!alreadyNet) {
         logSystem("MODEM: not network connected → doing full CFUN/APN setup");
 
-        // Stäng av RF (CFUN=0) innan APN-inställning
+        // RF OFF
         logSystem("MODEM: disable RF (CFUN=0)");
-        modem.sendAT("+CFUN=0");
-        modem.waitResponse(20000UL);  // ignorerar fel, bara loggat
+        modemSetCfun(0, 20000UL);  // ignorerar fel (loggas i helpern)
 
-        // nätverksläge + preferred mode
         modem.setNetworkMode(2);   // auto
         modem.setPreferredMode(3); // CAT-M + NB-IoT
 
-        // APN-inställning (CGDCONT + CNCFG)
+        // APN
         logSystem("MODEM: set APN via CGDCONT/CNCFG");
         modem.sendAT("+CGDCONT=1,\"IP\",\"", apn, "\"");
         if (modem.waitResponse(5000UL) != 1) {
@@ -180,14 +184,10 @@ bool modemConnectData(const char *apn,
             logSystem("MODEM: CNCFG failed");
         }
 
-        // Slå på RF (CFUN=1)
+        // RF ON
         logSystem("MODEM: enable RF (CFUN=1)");
-        modem.sendAT("+CFUN=1");
-        if (modem.waitResponse(20000UL) != 1) {
-            logSystem("MODEM: CFUN=1 failed");
-        }
+        modemSetCfun(1, 20000UL);
 
-        // Vänta på nätregistrering
         if (!modemWaitForNetwork(netRegTimeoutMs)) {
             out.err = "net_timeout";
             return false;
@@ -196,13 +196,13 @@ bool modemConnectData(const char *apn,
         logSystem("MODEM: already network connected, reusing registration");
     }
 
-    // 4) Aktivera data (idempotent – kan köras även om det redan är aktivt)
+    // 4) Data
     if (!modemActivateData(dataAttachTimeoutMs)) {
         out.err = "data_attach_failed";
         return false;
     }
 
-    // 5) Verifiera GPRS, IP, CSQ
+    // 5) IP, CSQ
     bool gprs = modem.isGprsConnected();
     logSystem(String("MODEM: GPRS status: ") + (gprs ? "connected" : "NOT connected"));
 
@@ -226,11 +226,8 @@ Client& modemGetClient() {
     return gsmClient;
 }
 
-
 // ---- Clock via AT+CCLK? -------------------------------------------------
 bool modemGetCclk(String &outCclk, uint32_t timeoutMs) {
-    // NOTE: SerialAT is the same UART used by TinyGSM.
-    // We do a minimal, short query; this works well right after network attach.
     while (SerialAT.available()) SerialAT.read();
 
     SerialAT.println("AT+CCLK?");
@@ -245,12 +242,11 @@ bool modemGetCclk(String &outCclk, uint32_t timeoutMs) {
             if (c == '\n') {
                 line.trim();
                 if (line.length() > 0) {
-                    // Expected line: +CCLK: "25/12/13,19:22:50+04"
                     if (line.startsWith("+CCLK:")) {
                         payload = line;
                     }
                     if (line == "OK") {
-                        start = timeoutMs + start; // break outer
+                        start = timeoutMs + start;
                         break;
                     }
                 }
@@ -270,5 +266,19 @@ bool modemGetCclk(String &outCclk, uint32_t timeoutMs) {
 
     outCclk = payload.substring(q1 + 1, q2);
     outCclk.trim();
-    return outCclk.length() >= 17; // rough sanity
+    return outCclk.length() >= 17;
+}
+
+// ---- RF control between comm windows (no deep sleep) ---------------------
+bool modemRfOff() {
+    logSystem("MODEM: RF OFF (CFUN=0)");
+    // Om CFUN=0 misslyckas är det inte kritiskt för STEP 2, men vi loggar.
+    modemSetCfun(0, 5000UL);
+    return true;
+}
+
+bool modemRfOn() {
+    logSystem("MODEM: RF ON (CFUN=1)");
+    modemSetCfun(1, 5000UL);
+    return true;
 }

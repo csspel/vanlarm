@@ -3,26 +3,32 @@
 #include "logging.h"
 #include "modem.h"
 #include "profiles.h"
-#include <PubSubClient.h>
 #include "time_manager.h"
+
+#include <PubSubClient.h>
+
+#ifndef MQTT_TOPIC_VERSION
+#define MQTT_TOPIC_VERSION "van/ellie/tele/version"
+#endif
+
 
 static Client*       netClient   = nullptr;
 static PubSubClient* mqttClient  = nullptr;
-static uint32_t msgCounter = 0;
+static uint32_t      msgCounter  = 0;
 
-static String lastDownlinkRaw;
-static uint32_t lastAckMsgId = 0;
+// Downlink state
+static String   lastDownlinkRaw;
+static uint32_t lastAckMsgId = 0;   // dedupe på ack_msg_id
 
+// ----------------- Minimal JSON helpers (som du redan hade) -----------------
 static String jsonGetString(const String& json, const char* key) {
   String k = String("\"") + key + "\":";
   int i = json.indexOf(k);
   if (i < 0) return "";
   i += k.length();
 
-  // hoppa whitespace
   while (i < (int)json.length() && (json[i] == ' ' || json[i] == '\t')) i++;
 
-  // måste börja med "
   if (i >= (int)json.length() || json[i] != '"') return "";
   i++;
   int j = json.indexOf('"', i);
@@ -37,7 +43,6 @@ static uint32_t jsonGetUInt(const String& json, const char* key) {
   i += k.length();
   while (i < (int)json.length() && (json[i] == ' ' || json[i] == '\t')) i++;
 
-  // tillåt "123" eller 123
   if (i < (int)json.length() && json[i] == '"') i++;
 
   uint32_t val = 0;
@@ -48,33 +53,51 @@ static uint32_t jsonGetUInt(const String& json, const char* key) {
   return val;
 }
 
+// ----------------- Internal helpers -----------------
+static void clearRetainedDownlink() {
+  if (!mqttClient || !mqttClient->connected()) return;
+
+  // Tom retained payload rensar retained msg på broker (Mosquitto/HA funkar så)
+  bool ok = mqttClient->publish(MQTT_TOPIC_DOWNLINK, "", true);
+  logSystem(String("MQTT: clear retained downlink ") + (ok ? "OK" : "FAILED"));
+}
+
 static void mqttPublishAck(uint32_t ackMsgId, const char* status, const char* detail = "") {
-  // {"device_id":"...","type":"ACK","ack_msg_id":1234,"status":"OK","detail":"...","profile":"ALARM"}
+  if (!mqttClient || !mqttClient->connected()) return;
+
   const ProfileConfig& p = currentProfile();
 
+  // {"device_id":"...","type":"ACK","ack_msg_id":1234,"status":"OK","detail":"...","profile":"ALARM","fw":"...","epoch_utc":...}
   String payload = "{";
   payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
   payload += "\"type\":\"ACK\",";
   payload += "\"ack_msg_id\":" + String(ackMsgId) + ",";
   payload += "\"status\":\"" + String(status) + "\",";
   payload += "\"detail\":\"" + String(detail) + "\",";
-  payload += "\"profile\":\"" + String(p.name) + "\"";
+  payload += "\"profile\":\"" + String(p.name) + "\",";
+
+#ifdef FW_VERSION
+  payload += "\"fw\":\"" + String(FW_VERSION) + "\",";
+#endif
+
+  payload += "\"epoch_utc\":" + String(timeEpochUtc());
   payload += "}";
 
-  mqttClient->publish(MQTT_TOPIC_ACK, payload.c_str());
+  mqttClient->publish(MQTT_TOPIC_ACK, payload.c_str(), false);
   logSystem("MQTT: ACK published payload=" + payload);
 }
 
+// ----------------- Robust downlink callback -----------------
 static void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
   String t(topic);
   String msg;
   msg.reserve(length);
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
 
-  // --- FIX: ignore retained clear (empty payload) ---
+  // Ignore retained clear (empty payload)
   msg.trim();
   if (msg.length() == 0) {
-    return;  // HA cleared retained cmd/downlink with empty payload
+    return;
   }
 
   logSystem("MQTT: RX topic=" + t + " payload=" + msg);
@@ -82,29 +105,48 @@ static void mqttCallback(char* topic, uint8_t* payload, unsigned int length) {
 
   if (t != MQTT_TOPIC_DOWNLINK) return;
 
-  uint32_t ackId = jsonGetUInt(msg, "ack_msg_id");
-  String desired = jsonGetString(msg, "desired_profile");
+  // Backwards compatible format:
+  //  {"ack_msg_id":123,"desired_profile":"ALARM"}
+  //
+  // Robustness:
+  // - kräver ack_msg_id
+  // - dedupe så retained inte körs om igen
+  // - clear retained efter hantering
+  uint32_t ackId  = jsonGetUInt(msg, "ack_msg_id");
+  String desired  = jsonGetString(msg, "desired_profile");
 
   if (ackId == 0) {
-    // vi kräver msg_id för spårbarhet
     mqttPublishAck(0, "ERROR", "missing_ack_msg_id");
+    // rensa INTE retained här, eftersom vi inte vet vad avsändaren vill (men du kan välja att rensa även här)
     return;
   }
+
+  // Dedupe: om broker spelar upp retained igen efter reconnect → ignorera
+  if (ackId == lastAckMsgId) {
+    mqttPublishAck(ackId, "DUPLICATE_IGNORED", "same_ack_msg_id");
+    clearRetainedDownlink();
+    return;
+  }
+  lastAckMsgId = ackId;
 
   if (desired.length() > 0) {
     ProfileId pid;
     if (profileFromString(desired, pid)) {
       setProfile(pid);
       mqttPublishAck(ackId, "OK", "profile_set");
-      mqttPublishAlive();   // eller mqttPublishTelemetry() om du senare byter namn
+      mqttPublishAlive();     // direkt feedback
     } else {
       mqttPublishAck(ackId, "ERROR", "unknown_profile");
     }
   } else {
     mqttPublishAck(ackId, "OK", "no_profile_change");
   }
+
+  // Viktigt: rensa retained så den inte triggar igen vid nästa connect
+  clearRetainedDownlink();
 }
 
+// ----------------- Public API -----------------
 void mqttSetup() {
   if (!netClient) {
     netClient = &modemGetClient();
@@ -114,19 +156,16 @@ void mqttSetup() {
     mqttClient->setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
     mqttClient->setCallback(mqttCallback);
 
-    // ✅ FIX: större buffer för längre JSON-payload
-    mqttClient->setBufferSize(512);   // testa 512 först, annars 1024
-    mqttClient->setKeepAlive(30);     // valfritt, men bra över LTE
-    mqttClient->setSocketTimeout(10); // valfritt
+    mqttClient->setBufferSize(512);
+    mqttClient->setKeepAlive(30);
+    mqttClient->setSocketTimeout(15);
   }
 }
-
 
 bool mqttConnect() {
   if (!mqttClient) mqttSetup();
 
   logSystem("MQTT: connecting to broker");
-
   mqttClient->setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
 
   bool ok;
@@ -142,9 +181,42 @@ bool mqttConnect() {
   }
 
   logSystem("MQTT: connected OK");
+
   mqttClient->subscribe(MQTT_TOPIC_DOWNLINK);
   logSystem("MQTT: subscribed " + String(MQTT_TOPIC_DOWNLINK));
+
+  // Publicera version vid varje connect (retain så HA alltid vet vad som kör)
+  mqttPublishVersion(true);
+
   return true;
+}
+
+bool mqttPublishVersion(bool retain) {
+  if (!mqttClient || !mqttClient->connected()) return false;
+
+  // Håll payload kort; du kan alltid lägga till mer senare
+  String payload = "{";
+  payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+
+#ifdef FW_VERSION
+  payload += "\"fw\":\"" + String(FW_VERSION) + "\",";
+#else
+  payload += "\"fw\":\"unknown\",";
+#endif
+
+  payload += "\"epoch_utc\":" + String(timeEpochUtc()) + ",";
+  payload += "\"time_valid\":" + String(timeIsValid() ? "true" : "false") + ",";
+  payload += "\"time_source\":\"" +
+             String((timeGetSource() == TimeSource::MODEM) ? "MODEM" :
+                    (timeGetSource() == TimeSource::NTP)   ? "NTP"   : "NONE") + "\",";
+  payload += "\"date_local\":\"" + timeDateLocal() + "\",";
+  payload += "\"time_local\":\"" + timeClockLocal() + "\",";
+  payload += "\"profile\":\"" + String(currentProfile().name) + "\"";
+  payload += "}";
+
+  bool ok = mqttClient->publish(MQTT_TOPIC_VERSION, payload.c_str(), retain);
+  logSystem(String("MQTT: publish version ") + (ok ? "OK" : "FAILED") + " payload=" + payload);
+  return ok;
 }
 
 bool mqttPublishAlive() {
@@ -180,8 +252,7 @@ bool mqttPublishAlive() {
   payload += "\"uptime_s\":" + String(upSeconds);
   payload += "}";
 
-  logSystem("MQTT: publishing alive to " + String(MQTT_TOPIC_ALIVE) +
-            " payload=" + payload);
+  logSystem("MQTT: publishing alive to " + String(MQTT_TOPIC_ALIVE) + " payload=" + payload);
   logSystem("MQTT: alive payload bytes=" + String(payload.length()));
 
   bool ok = mqttClient->publish(MQTT_TOPIC_ALIVE, payload.c_str());
@@ -206,6 +277,7 @@ void mqttDisconnect() {
     mqttClient->disconnect();
   }
 }
+
 bool mqttIsConnected() {
   return mqttClient && mqttClient->connected();
 }
