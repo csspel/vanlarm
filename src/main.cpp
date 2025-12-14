@@ -1,12 +1,6 @@
-// main.cpp (STEP 2) - SD-only via logging.cpp
-// Features:
-//  - Catch-up alive (if overdue, send immediately when online)
-//  - Quick MQTT reconnect inside the same comm window
-//  - Reason codes on state transitions
-//  - RF policy: keep RF ON in TRAVEL + STOLEN
+// main.cpp (STEP 2) - SD-only logging, catch-up alive, quick MQTT reconnect, reason codes
 
 #include <Arduino.h>
-
 #include "config.h"
 #include "power.h"
 #include "modem.h"
@@ -14,7 +8,6 @@
 #include "profiles.h"
 #include "time_manager.h"
 #include "logging.h"
-#include "sdcard.h"
 #include "esp_log.h"
 
 // ================= RF-policy =================
@@ -28,7 +21,7 @@ static bool shouldKeepRfOn(ProfileId p) {
   }
 }
 
-// ================= State machine =================
+// ================= State machine (STEP 2) =================
 enum class SystemState {
   BOOT,
   INIT_HW,
@@ -64,22 +57,22 @@ enum class ReasonCode {
 
 static const char* reasonName(ReasonCode r) {
   switch (r) {
-    case ReasonCode::NONE:                   return "NONE";
-    case ReasonCode::BOOT_START:             return "BOOT_START";
-    case ReasonCode::TIMER_ALIVE_DUE:        return "TIMER_ALIVE_DUE";
-    case ReasonCode::NET_ATTACH_OK:          return "NET_ATTACH_OK";
-    case ReasonCode::NET_ATTACH_FAIL:        return "NET_ATTACH_FAIL";
-    case ReasonCode::MQTT_CONN_OK:           return "MQTT_CONN_OK";
-    case ReasonCode::MQTT_CONN_FAIL:         return "MQTT_CONN_FAIL";
-    case ReasonCode::MQTT_LOST_RECONNECTING: return "MQTT_LOST_RECONNECTING";
-    case ReasonCode::MQTT_RECONNECT_OK:      return "MQTT_RECONNECT_OK";
-    case ReasonCode::MQTT_RECONNECT_FAIL:    return "MQTT_RECONNECT_FAIL";
-    case ReasonCode::ALIVE_SENT:             return "ALIVE_SENT";
-    case ReasonCode::ALIVE_PUBLISH_FAIL:     return "ALIVE_PUBLISH_FAIL";
+    case ReasonCode::NONE:                  return "NONE";
+    case ReasonCode::BOOT_START:            return "BOOT_START";
+    case ReasonCode::TIMER_ALIVE_DUE:       return "TIMER_ALIVE_DUE";
+    case ReasonCode::NET_ATTACH_OK:         return "NET_ATTACH_OK";
+    case ReasonCode::NET_ATTACH_FAIL:       return "NET_ATTACH_FAIL";
+    case ReasonCode::MQTT_CONN_OK:          return "MQTT_CONN_OK";
+    case ReasonCode::MQTT_CONN_FAIL:        return "MQTT_CONN_FAIL";
+    case ReasonCode::MQTT_LOST_RECONNECTING:return "MQTT_LOST_RECONNECTING";
+    case ReasonCode::MQTT_RECONNECT_OK:     return "MQTT_RECONNECT_OK";
+    case ReasonCode::MQTT_RECONNECT_FAIL:   return "MQTT_RECONNECT_FAIL";
+    case ReasonCode::ALIVE_SENT:            return "ALIVE_SENT";
+    case ReasonCode::ALIVE_PUBLISH_FAIL:    return "ALIVE_PUBLISH_FAIL";
     case ReasonCode::COMM_WINDOW_MIN_HOLD_DONE: return "COMM_WINDOW_MIN_HOLD_DONE";
     case ReasonCode::COMM_WINDOW_MAX_EXPIRED:   return "COMM_WINDOW_MAX_EXPIRED";
-    case ReasonCode::BACKOFF_SET:            return "BACKOFF_SET";
-    default:                                 return "UNKNOWN";
+    case ReasonCode::BACKOFF_SET:           return "BACKOFF_SET";
+    default:                                return "UNKNOWN";
   }
 }
 
@@ -97,13 +90,10 @@ static const char* stateName(SystemState s) {
   }
 }
 
-// ================= Logging helpers =================
-// sekvensräknare så du ser om rader tappas
+// sekvensräknare i loggmeddelandet (så du ser om något tappas)
 static uint32_t logSeq = 0;
 
 static inline void LOG(const String& s) {
-  // logSystem() prefixar redan datum/tid + uptime.
-  // Vi lägger på "SEQ | STATE |" i själva msg:et.
   String line;
   line.reserve(180);
   line += String(++logSeq);
@@ -115,9 +105,7 @@ static inline void LOG(const String& s) {
 }
 
 static void changeState(SystemState newState, ReasonCode reason = ReasonCode::NONE, const String& extra = "") {
-  String msg;
-  msg.reserve(160);
-  msg += "STATE ";
+  String msg = "STATE ";
   msg += stateName(currentState);
   msg += " -> ";
   msg += stateName(newState);
@@ -129,34 +117,35 @@ static void changeState(SystemState newState, ReasonCode reason = ReasonCode::NO
   }
 
   LOG(msg);
+
   currentState = newState;
   stateEnterMs = millis();
 }
 
 // ================= Alive scheduler + backoff =================
-static uint32_t aliveDueAtMs   = 0;  // deadline, catch-up om overdue
+static uint32_t aliveDueAtMs   = 0;
 static uint32_t retryBackoffMs = 0;
 
-static const uint32_t ALIVE_PERIOD_MS = 120000UL; // 2 min
-static const uint32_t RETRY_MIN_MS    = 15000UL;  // 15 s
-static const uint32_t RETRY_MAX_MS    = 120000UL; // 2 min
+static const uint32_t ALIVE_PERIOD_MS = 120000;   // 2 min
+static const uint32_t RETRY_MIN_MS    = 15000;    // 15 s
+static const uint32_t RETRY_MAX_MS    = 120000;   // 2 min (max)
 static const uint32_t NET_RETRY_INTERVAL_MS = 60000UL;
 
 static void bumpBackoff() {
   if (retryBackoffMs == 0) retryBackoffMs = RETRY_MIN_MS;
-  else retryBackoffMs = min<uint32_t>(retryBackoffMs * 2, RETRY_MAX_MS);
+  else retryBackoffMs = min(retryBackoffMs * 2, RETRY_MAX_MS);
 }
 
 // ================= Comm window =================
 static uint32_t mqttOnlineSince    = 0;
 static uint32_t commWindowEndsAtMs = 0;
 
-static const uint32_t MQTT_MIN_ONLINE_MS = 15000UL; // 15 s downlink-fönster
-static const uint32_t COMM_WINDOW_MAX_MS = 60000UL; // max tid per försök
+static const uint32_t MQTT_MIN_ONLINE_MS  = 15000;  // 15s downlink-fönster
+static const uint32_t COMM_WINDOW_MAX_MS  = 60000;  // max total tid online/reconnect i ett försök
 
 // ================= MQTT quick reconnect policy =================
 static const uint8_t  MQTT_RECONNECT_TRIES    = 5;
-static const uint32_t MQTT_RECONNECT_DELAY_MS = 2000UL;
+static const uint32_t MQTT_RECONNECT_DELAY_MS = 2000;
 
 static bool mqttQuickReconnect(uint32_t nowMs) {
   for (uint8_t i = 1; i <= MQTT_RECONNECT_TRIES; i++) {
@@ -182,7 +171,7 @@ static bool mqttQuickReconnect(uint32_t nowMs) {
 void setup() {
   Serial.begin(115200);
 
-  // Stäng av ESP-IDF sdmmc spam i terminaln
+  // stäng av sdmmc spam i terminaln
   esp_log_level_set("sdmmc_common", ESP_LOG_NONE);
   esp_log_level_set("sdmmc_req",    ESP_LOG_NONE);
   esp_log_level_set("sdmmc_cmd",    ESP_LOG_NONE);
@@ -192,6 +181,7 @@ void setup() {
   Serial.println();
   Serial.println("=== Vanlarm V2 – STEP 2 (MQTT + alive) ===");
 
+  // Init tid/profil (logSystem kan skriva --no-time-- tills time är valid)
   timeInit();
   profilesInit(ProfileId::ALARM);
 
@@ -219,12 +209,8 @@ void loop() {
         LOG("FATAL: PMU init failed");
         while (true) delay(1000);
       }
-      if (!sdcardInit()) {
-       LOG("FATAL: SD init failed");
-       while (true) delay(1000);
-      }
 
-      // SD-only: mount + create /system.log (logging.cpp)
+      // SD-only: mount + öppna /system.log (logging.cpp sköter sdcardInit internt)
       LOG("INIT_HW: loggingInit() (SD_MMC mount + /system.log)");
       loggingInit();
 
@@ -240,7 +226,6 @@ void loop() {
     }
 
     case SystemState::IDLE: {
-      // Trigger comm window när alive är due (eller overdue)
       if ((int32_t)(now - aliveDueAtMs) >= 0) {
         int32_t overdue = (int32_t)(now - aliveDueAtMs);
         LOG("IDLE: alive due -> start comm window overdueMs=" + String(overdue));
@@ -262,7 +247,6 @@ void loop() {
       if (ok) {
         timeSyncFromModem();
         timeSyncFromNtp(8000);
-
         changeState(SystemState::MQTT_CONNECT, ReasonCode::NET_ATTACH_OK);
       } else {
         LOG("NET_CONNECT: FAIL, T_net=" + String(now - stateEnterMs) + " ms");
@@ -282,12 +266,10 @@ void loop() {
       if (mqttConnect()) {
         mqttOnlineSince    = now;
         commWindowEndsAtMs = now + COMM_WINDOW_MAX_MS;
-
         changeState(SystemState::MQTT_ONLINE, ReasonCode::MQTT_CONN_OK);
       } else {
         bumpBackoff();
         aliveDueAtMs = now + retryBackoffMs;
-
         changeState(SystemState::MQTT_DISCONNECT, ReasonCode::MQTT_CONN_FAIL,
                     String("backoffMs=") + String(retryBackoffMs));
       }
@@ -295,7 +277,6 @@ void loop() {
     }
 
     case SystemState::MQTT_ONLINE: {
-      // pumpa callbacks (downlink)
       mqttLoop();
 
       const uint32_t elapsedMin = now - mqttOnlineSince;
@@ -305,14 +286,9 @@ void loop() {
       // C) Om MQTT tappat: reconnect i samma comm window
       if (!mqttIsConnected()) {
         LOG("MQTT: lost connection -> quick reconnect in same window");
-        changeState(SystemState::MQTT_ONLINE, ReasonCode::MQTT_LOST_RECONNECTING);
-
         bool recOk = mqttQuickReconnect(millis());
         if (recOk) {
-          // Efter reconnect: publicera version igen (mqttConnect gör det redan)
-          // och fortsätt i ONLINE
-          // (Vi byter inte state här för att slippa “STATE ONLINE -> ONLINE”-spam,
-          //  men reason codes finns i loggen ovan.)
+          // fortsätt i samma state
           LOG("MQTT: reconnect OK");
         } else {
           bumpBackoff();
@@ -323,7 +299,7 @@ void loop() {
         }
       }
 
-      // B) Catch-up alive: om overdue och online -> skicka direkt
+      // B) Catch-up alive: om alive är overdue och vi är online -> skicka direkt
       if ((int32_t)(now - aliveDueAtMs) >= 0) {
         if (mqttPublishAlive()) {
           retryBackoffMs = 0;
@@ -350,20 +326,17 @@ void loop() {
       if (now - lastStat > 5000) {
         uint32_t remMin = (elapsedMin < MQTT_MIN_ONLINE_MS) ? (MQTT_MIN_ONLINE_MS - elapsedMin) : 0;
         uint32_t remMax = (now < commWindowEndsAtMs) ? (commWindowEndsAtMs - now) : 0;
-        LOG("MQTT_ONLINE: minHoldRem=" + String(remMin / 1000) + "s, windowRem=" + String(remMax / 1000) + "s");
+        LOG("MQTT_ONLINE: minHoldRem=" + String(remMin/1000) + "s, windowRem=" + String(remMax/1000) + "s");
         lastStat = now;
       }
 
-      // max fönster: bryt oavsett
       if (windowExpired) {
         changeState(SystemState::MQTT_DISCONNECT, ReasonCode::COMM_WINDOW_MAX_EXPIRED);
         break;
       }
 
-      // håll minst 15s
       if (!minHoldDone) break;
 
-      // min hold klar -> vi kan gå ur fönstret
       changeState(SystemState::MQTT_DISCONNECT, ReasonCode::COMM_WINDOW_MIN_HOLD_DONE);
       break;
     }
@@ -377,11 +350,9 @@ void loop() {
     case SystemState::NET_DISCONNECT: {
       LOG("NET_DISCONNECT: end of comm window");
 
-      // RF-policy per profil
       ProfileId p = currentProfile().id;
       if (shouldKeepRfOn(p)) {
         LOG(String("MODEM: keep RF ON in profile=") + profileName(p));
-        // ingen modemRfOff()
       } else {
         modemRfOff();
       }
