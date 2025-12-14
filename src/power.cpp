@@ -21,6 +21,11 @@ bool powerInit() {
   PMU.setDC3Voltage(3000);
   PMU.enableDC3();
 
+  // SD Card VDD 3300 (ALDO3)
+  PMU.setALDO3Voltage(3300);
+  PMU.enableALDO3();
+  delay(50);  // ge SD-kortet tid att komma upp
+
   // BLDO2 = GPS-antenna power
   PMU.setBLDO2Voltage(3300);
   PMU.enableBLDO2();
