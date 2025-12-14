@@ -1,35 +1,37 @@
 #include "sdcard.h"
-#include <SD_MMC.h>
-#include "power.h"
-#include "logging.h"
+#include "config.h"
 
-// utilities.h i LilyGO anger SDMMC_CLK/SDMMC_CMD/SDMMC_DATA.
-// Om du inte har den, definiera pins här (vanligt för T-SIM7080G-S3):
-#ifndef SDMMC_CLK
-#define SDMMC_CLK  38
-#define SDMMC_CMD  39
-#define SDMMC_DATA 40
-#endif
+#include <Arduino.h>
+#include <SD_MMC.h>
+
+static bool s_mounted = false;
 
 bool sdcardInit() {
-  // 1) Se till att SD-kortets ström är på (ALDO3 3.3V)
-  // Vi lägger detta i power.cpp/power.h strax (se nästa steg),
-  // men om du redan har PMU globalt där: kalla en funktion här.
+  if (s_mounted) return true;
 
-  // 2) Sätt pins och mounta i 1-bit läge
-  SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
+  Serial.println("SD: init SD_MMC...");
 
+  // T-SIM7080G-S3 pins (1-bit SDMMC)
+  SD_MMC.setPins(PIN_SD_CLK, PIN_SD_CMD, PIN_SD_D0);
+
+  // Mountpoint "/sdcard", 1-bit mode=true
   if (!SD_MMC.begin("/sdcard", true)) {
-    logSystem("SD: Card Mount Failed (SD_MMC.begin)");
+    Serial.println("SD: SD_MMC.begin FAILED (no SD?)");
+    s_mounted = false;
     return false;
   }
 
   if (SD_MMC.cardType() == CARD_NONE) {
-    logSystem("SD: No SD card detected (CARD_NONE)");
+    Serial.println("SD: No card attached (CARD_NONE)");
+    SD_MMC.end();
+    s_mounted = false;
     return false;
   }
 
-  uint64_t mb = SD_MMC.cardSize() / (1024 * 1024);
-  logSystem("SD: mounted OK, size=" + String((uint32_t)mb) + "MB");
+  s_mounted = true;
+
+  uint64_t sizeMB = SD_MMC.cardSize() / (1024ULL * 1024ULL);
+  Serial.printf("SD: mounted OK, size=%lluMB\n", sizeMB);
+
   return true;
 }
