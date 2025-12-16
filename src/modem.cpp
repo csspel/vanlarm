@@ -282,3 +282,37 @@ bool modemRfOn() {
     modemSetCfun(1, 5000UL);
     return true;
 }
+
+void modemPowerCycle(uint32_t offMs, uint32_t bootMs) {
+    logSystem("MODEM: power cycle start");
+
+    // Försök RF off först (inte kritiskt om det failar)
+    modemSetCfun(0, 5000UL);
+
+    // PWRKEY-sekvens: din kod använder LOW->HIGH->LOW som “pulse”.
+    // Vi kör en längre puls för att trigga power toggle.
+    pinMode(BOARD_MODEM_PWR_PIN, OUTPUT);
+
+    logSystem("MODEM: PWRKEY long pulse (toggle power)");
+    digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+    delay(100);
+    digitalWrite(BOARD_MODEM_PWR_PIN, HIGH);
+    delay(1500);
+    digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+
+    // Vänta en stund “off”
+    delay(offMs);
+
+    // Starta igen med samma puls
+    logSystem("MODEM: PWRKEY pulse (power on)");
+    digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+    delay(100);
+    digitalWrite(BOARD_MODEM_PWR_PIN, HIGH);
+    delay(1200);
+    digitalWrite(BOARD_MODEM_PWR_PIN, LOW);
+
+    // Låt modemet boota innan vi provar AT
+    delay(bootMs);
+
+    logSystem("MODEM: power cycle done");
+}

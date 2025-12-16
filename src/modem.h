@@ -25,3 +25,6 @@ bool modemGetCclk(String &outCclk, uint32_t timeoutMs = 1500);
 
 bool modemRfOn();
 bool modemRfOff();
+
+void modemPowerCycle(uint32_t offMs = 3000, uint32_t bootMs = 8000);
+

@@ -1,6 +1,7 @@
 #include "mqtt.h"
 #include "config.h"
 #include "logging.h"
+#include "gps.h"
 #include "modem.h"
 #include "profiles.h"
 #include "time_manager.h"
