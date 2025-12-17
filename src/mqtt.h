@@ -1,14 +1,16 @@
 #pragma once
 #include <Arduino.h>
+#include "gps.h"
 
 void mqttSetup();
 bool mqttConnect();
-
-bool mqttPublishAlive();
-bool mqttPublishVersion(bool retain = true);
-
 void mqttLoop();
-void mqttLoopFor(uint32_t durationMs);
-
 void mqttDisconnect();
 bool mqttIsConnected();
+void mqttLoopFor(uint32_t durationMs);
+
+bool mqttPublishVersion(bool retain = true);
+bool mqttPublishAlive();
+
+// NY: GPS single
+bool mqttPublishGpsSingle(const GpsFix &fx, bool fixOk);

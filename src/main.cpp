@@ -149,6 +149,11 @@ static void changeState(SystemState newState, ReasonCode reason = ReasonCode::NO
 static uint32_t commDueAtMs = 0; // next comm window
 static uint32_t gpsDueAtMs = 0;  // next GPS sample time
 
+// Pending GPS(single) to publish in next comm window
+static bool pendingGpsSingleHave = false;
+static bool pendingGpsSingleFixOk = false;
+static GpsFix pendingGpsSingleFix;
+
 // MQTT publish retry backoff (only used inside a comm window)
 static uint32_t retryBackoffMs = 0;
 static const uint32_t RETRY_MIN_MS = 15000UL;
@@ -186,58 +191,19 @@ static void clearNetBackoff()
   netNextAttemptAtMs = 0;
 }
 
-// Profile periods
-static uint32_t commPeriodFor(ProfileId id)
-{
-  switch (id)
-  {
-  case ProfileId::TRAVEL:
-    return 300000UL; // 5 min
-  case ProfileId::STOLEN:
-    return 120000UL; // 2 min
-  case ProfileId::ALARM:
-    return 300000UL; // 5 min
-  case ProfileId::PARKED:
-    return 300000UL; // 5 min
-  default:
-    return 300000UL;
-  }
-}
-
-static uint32_t gpsPeriodFor(ProfileId id)
-{
-  switch (id)
-  {
-  case ProfileId::TRAVEL:
-    return 10000UL; // 10 s
-  case ProfileId::STOLEN:
-    return 120000UL; // 1 fix per uplink period (du bad om det)
-  case ProfileId::ALARM:
-    return 300000UL; // 5 min
-  case ProfileId::PARKED:
-    return 300000UL; // 5 min
-  default:
-    return 60000UL;
-  }
-}
-
-// Max wait for a good fix (you requested 30s)
-static const uint32_t GPS_FIX_WAIT_MS = 30000UL;
-
 static void scheduleNextComm(uint32_t nowMs)
 {
-  uint32_t period = commPeriodFor(currentProfile().id);
-  // jitter +/- 10s to avoid "same minute each hour" coupling
+  uint32_t period = currentProfile().commIntervalMs;
   int32_t jitter = random(-10000, 10000);
   int64_t next = (int64_t)nowMs + (int64_t)period + (int64_t)jitter;
   if (next < (int64_t)nowMs + 1000)
-    next = (int64_t)nowMs + 1000; // never schedule in the past
+    next = (int64_t)nowMs + 1000;
   commDueAtMs = (uint32_t)next;
 }
 
 static void scheduleNextGps(uint32_t nowMs)
 {
-  gpsDueAtMs = nowMs + gpsPeriodFor(currentProfile().id);
+  gpsDueAtMs = nowMs + currentProfile().gpsIntervalMs;
 }
 
 // ================= Comm window timing =================
@@ -354,20 +320,26 @@ void loop()
     const bool commIsDue = ((int32_t)(now - commDueAtMs) >= 0);
 
     // 1) GPS sampling (only when comm is NOT due)
+    // Used mainly in TRAVEL for local logging / buffering.
+    // Best-effort: do NOT block long here.
     if (!commIsDue && (int32_t)(now - gpsDueAtMs) >= 0)
     {
       modemRfOff(); // ensure RF is OFF while using GNSS
+
       GpsFix fx;
-      bool ok = gpsGetFixWait(fx, GPS_FIX_WAIT_MS);
+
+      // Short, non-blocking attempt (e.g. 1–2 seconds)
+      bool ok = gpsGetFixWait(fx, 2000); // <-- FIX: no GPS_FIX_WAIT_MS
+
       LOG(String("GPS: sample ") + (ok ? "OK" : "FAIL") +
           " valid=" + String(fx.valid ? "true" : "false") +
-          (fx.valid ? (String(" lat=") + String(fx.lat, 6) + " lon=" + String(fx.lon, 6)) : ""));
+          (fx.valid ? (String(" lat=") + String(fx.lat, 6) +
+                       " lon=" + String(fx.lon, 6))
+                    : ""));
 
-      // TRAVEL can keep GNSS running for faster fixes; others can power off
-      if (currentProfile().id != ProfileId::TRAVEL)
-      {
-        gpsPowerOff();
-      }
+      // TODO later:
+      // - push to TRAVEL buffer
+      // - write to SD
 
       scheduleNextGps(now);
     }
@@ -386,6 +358,33 @@ void loop()
 
       int32_t overdue = (int32_t)(now - commDueAtMs);
       LOG("IDLE: comm due -> start comm window overdueMs=" + String(overdue));
+
+      // GPS(single) i PARKED/ALARM/STOLEN: ta en fix innan LTE (time-mux)
+      pendingGpsSingleHave = false;
+
+      if (currentProfile().id != ProfileId::TRAVEL)
+      {
+        modemRfOff(); // säkra RF OFF när vi kör GNSS
+
+        GpsFix fx;
+        uint32_t waitMs = currentProfile().gpsFixWaitMs;
+        if (waitMs == 0)
+          waitMs = 30000UL; // defensivt, men TRAVEL går ändå inte hit
+
+        bool ok = gpsGetFixWait(fx, waitMs);
+
+        pendingGpsSingleFix = fx;
+        pendingGpsSingleFixOk = ok;
+        pendingGpsSingleHave = true;
+
+        LOG(String("GPS(single): pre-comm ") + (ok ? "OK" : "FAIL") +
+            " valid=" + String(fx.valid ? "true" : "false") +
+            (fx.valid ? (String(" lat=") + String(fx.lat, 6) + " lon=" + String(fx.lon, 6)) : ""));
+
+        // Stäng GNSS innan LTE
+        gpsPowerOff();
+      }
+
       changeState(SystemState::NET_CONNECT, ReasonCode::TIMER_COMM_DUE,
                   String("commOverdueMs=") + String(overdue));
     }
@@ -498,24 +497,51 @@ void loop()
       }
     }
 
-    // Publish once per comm window (your "alive/status", ideally includes latest GPS fix)
+    // Publish once per comm window: gps(single) (if pending) + alive
     if (!commPublishedThisWindow)
     {
-      if (mqttPublishAlive())
+      auto publishGpsAndAlive = [&]() -> bool
       {
+        bool okAll = true;
+
+        // 1) gps(single) om vi har pending och inte TRAVEL
+        if (pendingGpsSingleHave && currentProfile().id != ProfileId::TRAVEL)
+        {
+          bool okGps = mqttPublishGpsSingle(pendingGpsSingleFix, pendingGpsSingleFixOk);
+          okAll = okAll && okGps;
+
+          // Vi har gjort ett publish-försök för denna fix (oavsett OK/FAIL)
+          // Om du vill retry:a samma fix vid reconnect, låt den vara true här
+          // och nollställ först när allt blev OK. Jag rekommenderar retry -> nollställ senare.
+        }
+
+        // 2) alive
+        bool okAlive = mqttPublishAlive();
+        okAll = okAll && okAlive;
+
+        return okAll;
+      };
+
+      // Försök 1: publicera (gps+alive)
+      if (publishGpsAndAlive())
+      {
+        // Allt OK
         commPublishedThisWindow = true;
+        pendingGpsSingleHave = false; // först nu släpper vi fixen (så reconnect kan retry:a)
         scheduleNextComm(now2);
-        LOG("COMM: publish OK, next comm scheduled");
+        LOG("COMM: publish OK (gps+alive), next comm scheduled");
       }
       else
       {
-        LOG("COMM: publish failed -> try quick reconnect then retry");
+        LOG("COMM: publish failed -> try quick reconnect then retry (gps+alive)");
+
         bool recOk = mqttQuickReconnect(now2);
-        if (recOk && mqttPublishAlive())
+        if (recOk && publishGpsAndAlive())
         {
           commPublishedThisWindow = true;
+          pendingGpsSingleHave = false;
           scheduleNextComm(millis());
-          LOG("COMM: publish OK after reconnect, next comm scheduled");
+          LOG("COMM: publish OK after reconnect (gps+alive), next comm scheduled");
         }
         else
         {

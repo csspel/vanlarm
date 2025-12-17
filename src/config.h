@@ -39,6 +39,9 @@ static const char MQTT_PASSWORD[]  = "hemautomation";    // annars lämna tomt
 // Topic för alive
 static const char MQTT_TOPIC_ALIVE[] = "van/ellie/tele/alive";
 
+// GPS single uplink
+static const char MQTT_TOPIC_GPS_SINGLE[] = "van/ellie/tele/gps";
+
 // Downlink topics (HA -> device)
 static const char MQTT_TOPIC_DOWNLINK[]    = "van/ellie/cmd/downlink";
 
