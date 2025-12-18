@@ -387,14 +387,14 @@ bool mqttIsConnected()
   return mqttClient && mqttClient->connected();
 }
 
-void mqttLoopFor(uint32_t durationMs)
-{
-  if (!mqttClient || !mqttClient->connected())
-    return;
-  uint32_t start = millis();
-  while (millis() - start < durationMs)
-  {
-    mqttClient->loop();
-    delay(10);
-  }
-}
+// void mqttLoopFor(uint32_t durationMs)
+//{
+//   if (!mqttClient || !mqttClient->connected())
+//     return;
+//   uint32_t start = millis();
+//   while (millis() - start < durationMs)
+//   {
+//     mqttClient->loop();
+//     delay(10);
+//   }
+// }

@@ -11,25 +11,37 @@ static GpsFix g_lastFix;
 static uint32_t g_lastFixAtMs = 0;
 
 // --- minimal AT helper ----------------------------------------------------
-static void atFlush() {
-  while (SerialAT.available()) (void)SerialAT.read();
+static void atFlush()
+{
+  while (SerialAT.available())
+    (void)SerialAT.read();
 }
 
-static bool atWaitOk(uint32_t timeoutMs) {
+static bool atWaitOk(uint32_t timeoutMs)
+{
   uint32_t start = millis();
   String line;
-  while (millis() - start < timeoutMs) {
-    while (SerialAT.available()) {
+  while (millis() - start < timeoutMs)
+  {
+    while (SerialAT.available())
+    {
       char c = (char)SerialAT.read();
-      if (c == '\r') continue;
-      if (c == '\n') {
+      if (c == '\r')
+        continue;
+      if (c == '\n')
+      {
         line.trim();
-        if (line.length()) {
-          if (line == "OK") return true;
-          if (line == "ERROR") return false;
+        if (line.length())
+        {
+          if (line == "OK")
+            return true;
+          if (line == "ERROR")
+            return false;
         }
         line = "";
-      } else {
+      }
+      else
+      {
         line += c;
       }
     }
@@ -38,35 +50,47 @@ static bool atWaitOk(uint32_t timeoutMs) {
   return false;
 }
 
-static bool atCmdOk(const String &cmd, uint32_t timeoutMs = 2000) {
+static bool atCmdOk(const String &cmd, uint32_t timeoutMs = 2000)
+{
   atFlush();
   SerialAT.println(cmd);
   return atWaitOk(timeoutMs);
 }
 
-static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLine, uint32_t timeoutMs = 2000) {
+static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLine, uint32_t timeoutMs = 2000)
+{
   atFlush();
   SerialAT.println(cmd);
   uint32_t start = millis();
   String line;
   bool got = false;
 
-  while (millis() - start < timeoutMs) {
-    while (SerialAT.available()) {
+  while (millis() - start < timeoutMs)
+  {
+    while (SerialAT.available())
+    {
       char c = (char)SerialAT.read();
-      if (c == '\r') continue;
-      if (c == '\n') {
+      if (c == '\r')
+        continue;
+      if (c == '\n')
+      {
         line.trim();
-        if (line.length()) {
-          if (line.startsWith(prefix)) {
+        if (line.length())
+        {
+          if (line.startsWith(prefix))
+          {
             outLine = line;
             got = true;
           }
-          if (line == "OK") return got;
-          if (line == "ERROR") return false;
+          if (line == "OK")
+            return got;
+          if (line == "ERROR")
+            return false;
         }
         line = "";
-      } else {
+      }
+      else
+      {
         line += c;
       }
     }
@@ -77,9 +101,11 @@ static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLin
 
 // --- CGNSINF parse --------------------------------------------------------
 // +CGNSINF: <GNSS run status>,<Fix status>,<UTC date & Time>,<Latitude>,<Longitude>,<MSL Altitude>,<Speed Over Ground>,<Course Over Ground>,<Fix Mode>,...
-static bool parseCgnsinf(const String &line, GpsFix &out) {
+static bool parseCgnsinf(const String &line, GpsFix &out)
+{
   int colon = line.indexOf(':');
-  if (colon < 0) return false;
+  if (colon < 0)
+    return false;
   String csv = line.substring(colon + 1);
   csv.trim();
 
@@ -88,17 +114,22 @@ static bool parseCgnsinf(const String &line, GpsFix &out) {
   String f[MAXF];
   int n = 0;
   int start = 0;
-  for (int i = 0; i <= (int)csv.length(); i++) {
-    if (i == (int)csv.length() || csv[i] == ',') {
-      if (n < MAXF) f[n++] = csv.substring(start, i);
+  for (int i = 0; i <= (int)csv.length(); i++)
+  {
+    if (i == (int)csv.length() || csv[i] == ',')
+    {
+      if (n < MAXF)
+        f[n++] = csv.substring(start, i);
       start = i + 1;
     }
   }
-  if (n < 9) return false;
+  if (n < 9)
+    return false;
 
   int run = f[0].toInt();
   int fix = f[1].toInt();
-  out.utc = f[2]; out.utc.trim();
+  out.utc = f[2];
+  out.utc.trim();
 
   out.lat = f[3].toDouble();
   out.lon = f[4].toDouble();
@@ -113,23 +144,25 @@ static bool parseCgnsinf(const String &line, GpsFix &out) {
   return true;
 }
 
-void gpsInit() {
-  // do nothing here; UART is initialized by modemInitUartAndPins()
-}
+// void gpsInit() {
+//   // do nothing here; UART is initialized by modemInitUartAndPins()
+// }
 
-bool gpsPowerOn() {
-  if (g_gpsOn) return true;
+bool gpsPowerOn()
+{
+  if (g_gpsOn)
+    return true;
 
-  // Configure GNSS output format + power on
-  // 0 = GPS+GLONASS+BeiDou+Galileo (depends on firmware); harmless if unsupported.
+  // Configure output format before power on (harmless if module ignores it).
   atCmdOk("AT+CGNSCFG=0", 2000);
 
-  if (!atCmdOk("AT+CGNSPWR=1", 5000)) {
+  if (!atCmdOk("AT+CGNSPWR=1", 5000))
+  {
     logSystem("GPS: CGNSPWR=1 failed");
     return false;
   }
 
-  // Optional: autostart (if supported)
+  // Request RMC output when available; tolerated if unsupported.
   atCmdOk("AT+CGNSSEQ=RMC", 2000);
 
   g_gpsOn = true;
@@ -137,10 +170,13 @@ bool gpsPowerOn() {
   return true;
 }
 
-bool gpsPowerOff() {
-  if (!g_gpsOn) return true;
+bool gpsPowerOff()
+{
+  if (!g_gpsOn)
+    return true;
 
-  if (!atCmdOk("AT+CGNSPWR=0", 5000)) {
+  if (!atCmdOk("AT+CGNSPWR=0", 5000))
+  {
     logSystem("GPS: CGNSPWR=0 failed");
     // still mark off to avoid stuck state
   }
@@ -149,21 +185,30 @@ bool gpsPowerOff() {
   return true;
 }
 
-bool gpsIsOn() { return g_gpsOn; }
+bool gpsIsOn()
+{
+  return g_gpsOn;
+}
 
-bool gpsPollOnce(GpsFix &out) {
+bool gpsPollOnce(GpsFix &out)
+{
   out = GpsFix{};
-  if (!g_gpsOn) {
-    if (!gpsPowerOn()) return false;
+  if (!g_gpsOn)
+  {
+    if (!gpsPowerOn())
+      return false;
   }
 
   String line;
   bool ok = atCmdGetLine("AT+CGNSINF", "+CGNSINF:", line, 2000);
-  if (!ok) return false;
+  if (!ok)
+    return false;
 
-  if (!parseCgnsinf(line, out)) return false;
+  if (!parseCgnsinf(line, out))
+    return false;
 
-  if (out.valid) {
+  if (out.valid)
+  {
     g_hasFix = true;
     g_lastFix = out;
     g_lastFixAtMs = millis();
@@ -171,17 +216,21 @@ bool gpsPollOnce(GpsFix &out) {
   return true;
 }
 
-bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs) {
+bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
+{
   uint32_t start = millis();
   uint32_t attempt = 0;
 
-  if (!gpsPowerOn()) return false;
+  if (!gpsPowerOn())
+    return false;
 
-  while (millis() - start < maxWaitMs) {
+  while (millis() - start < maxWaitMs)
+  {
     attempt++;
     GpsFix tmp;
     bool ok = gpsPollOnce(tmp);
-    if (ok && tmp.valid) {
+    if (ok && tmp.valid)
+    {
       tmp.fix_age_ms = 0;
       out = tmp;
       logSystem("GPS: FIX OK lat=" + String(tmp.lat, 6) + " lon=" + String(tmp.lon, 6) + " spd=" + String(tmp.speed_kmh, 1));
@@ -189,28 +238,41 @@ bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs) {
     }
 
     // If we have an old fix already, keep its age updated for caller
-    if (g_hasFix) {
+    if (g_hasFix)
+    {
       out = g_lastFix;
       out.fix_age_ms = millis() - g_lastFixAtMs;
     }
 
-    if (attempt == 1) logSystem("GPS: waiting for fix...");
+    if (attempt == 1)
+      logSystem("GPS: waiting for fix...");
     delay(1000);
   }
 
   // timeout: return last known fix (valid or not) for logging
-  if (g_hasFix) {
+  if (g_hasFix)
+  {
     out = g_lastFix;
     out.fix_age_ms = millis() - g_lastFixAtMs;
   }
-  logSystem("GPS: FIX TIMEOUT after " + String(maxWaitMs/1000) + "s");
+  logSystem("GPS: FIX TIMEOUT after " + String(maxWaitMs / 1000) + "s");
   return false;
 }
 
-bool gpsHasLastFix() { return g_hasFix; }
-GpsFix gpsLastFix() { 
+bool gpsHasLastFix()
+{
+  return g_hasFix;
+}
+
+GpsFix gpsLastFix()
+{
   GpsFix o = g_lastFix;
-  if (g_hasFix) o.fix_age_ms = millis() - g_lastFixAtMs;
+  if (g_hasFix)
+    o.fix_age_ms = millis() - g_lastFixAtMs;
   return o;
 }
-uint32_t gpsLastFixAtMs() { return g_lastFixAtMs; }
+
+uint32_t gpsLastFixAtMs()
+{
+  return g_lastFixAtMs;
+}

@@ -8,17 +8,21 @@
 #include <FS.h>
 #include <SD_MMC.h>
 
-static bool   s_sdOk = false;
+static bool s_sdOk = false;
 static String s_logPath = "/system.log";
 
-static String makePrefix() {
+static String makePrefix()
+{
   // Format: "YYYY-MM-DD HH:MM:SS | 4s | "
   uint32_t upS = millis() / 1000;
 
   String ts;
-  if (timeIsValid()) {
+  if (timeIsValid())
+  {
     ts = timeDateLocal() + " " + timeClockLocal();
-  } else {
+  }
+  else
+  {
     ts = String("--no-time--");
   }
 
@@ -31,20 +35,25 @@ static String makePrefix() {
   return p;
 }
 
-void loggingInit() {
+void loggingInit()
+{
   // Mount SD en gång (single source of truth)
   s_sdOk = sdcardInit();
 
-  if (!s_sdOk) {
+  if (!s_sdOk)
+  {
     Serial.println("LOG: SD init failed (sdcardInit returned false). SD-only requested -> HALT.");
-    while (true) delay(1000);
+    while (true)
+      delay(1000);
   }
 
   // Verifiera att vi kan öppna loggfilen
   File f = SD_MMC.open(s_logPath.c_str(), FILE_APPEND);
-  if (!f) {
+  if (!f)
+  {
     Serial.println("LOG: SD mounted but cannot open /system.log for append -> HALT.");
-    while (true) delay(1000);
+    while (true)
+      delay(1000);
   }
   f.println(makePrefix() + "LOG: start, path=" + s_logPath);
   f.flush();
@@ -53,25 +62,28 @@ void loggingInit() {
   Serial.println("LOG: SD OK (already mounted), path=" + s_logPath);
 }
 
-bool loggingSdOk() {
-  return s_sdOk;
-}
+// bool loggingSdOk() {
+//   return s_sdOk;
+// }
 
-const char* loggingPath() {
-  return s_logPath.c_str();
-}
+// const char* loggingPath() {
+//   return s_logPath.c_str();
+// }
 
-void logSystem(const String& msg) {
+void logSystem(const String &msg)
+{
   String line = makePrefix() + msg;
 
   // Alltid Serial
   Serial.println(line);
 
   // SD om ok
-  if (!s_sdOk) return;
+  if (!s_sdOk)
+    return;
 
   File f = SD_MMC.open(s_logPath.c_str(), FILE_APPEND);
-  if (!f) {
+  if (!f)
+  {
     // SD-only: markera tydligt i Serial om SD plötsligt slutar fungera
     Serial.println(makePrefix() + "LOG: SD open FAILED for append");
     return;
