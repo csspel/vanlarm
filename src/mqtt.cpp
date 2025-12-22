@@ -185,7 +185,7 @@ void mqttSetup()
     mqttClient->setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
     mqttClient->setCallback(mqttCallback);
 
-    mqttClient->setBufferSize(512);
+    mqttClient->setBufferSize(2048); // öka buffer för större payloads framförallt för batch GPS
     mqttClient->setKeepAlive(30);
     mqttClient->setSocketTimeout(15);
   }
