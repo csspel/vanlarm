@@ -14,6 +14,7 @@ static TinyGsmClient gsmClient(modem);
 static bool modemWaitForAT(uint32_t timeoutMs)
 {
     uint32_t start = millis();
+    uint32_t lastLog = 0;
     int retry = 0;
 
     logSystem("MODEM: waiting for AT...");
@@ -70,6 +71,7 @@ static bool modemWaitForSimReady(uint32_t timeoutMs)
 static bool modemWaitForNetwork(uint32_t timeoutMs)
 {
     uint32_t start = millis();
+    uint32_t lastLog = 0;
 
     logSystem("MODEM: wait for network registration...");
 
@@ -77,11 +79,21 @@ static bool modemWaitForNetwork(uint32_t timeoutMs)
     {
         if (modem.isNetworkConnected())
         {
-            logSystem("MODEM: network registered");
+            int csq = modem.getSignalQuality();
+            logSystem("MODEM: network registered (CSQ=" + String(csq) + ")");
             return true;
         }
+        // En liten "progress" utan att spamma loggar
         Serial.print(".");
         delay(1000);
+        // Var ~10:e sekund: skriv mer info
+        uint32_t elapsed = millis() - start;
+        if (elapsed - lastLog >= 10000UL)
+        {
+            lastLog = elapsed;
+            int csq = modem.getSignalQuality();
+            logSystem("MODEM: still waiting net reg... t=" + String(elapsed / 1000) + "s CSQ=" + String(csq));
+        }
     }
 
     logSystem("MODEM: network registration TIMEOUT");
@@ -209,6 +221,7 @@ bool modemConnectData(const char *apn,
         // RF ON
         logSystem("MODEM: enable RF (CFUN=1)");
         modemSetCfun(1, 20000UL);
+        delay(1000); // låt RF stabilisera innan vi väntar på registrering
 
         if (!modemWaitForNetwork(netRegTimeoutMs))
         {

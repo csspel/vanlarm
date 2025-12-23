@@ -3,6 +3,7 @@
 #include "logging.h"
 #include "sdcard.h"
 #include "time_manager.h"
+#include "config.h"
 
 #include <Arduino.h>
 #include <FS.h>
@@ -10,6 +11,7 @@
 
 static bool s_sdOk = false;
 static String s_logPath = "/system.log";
+static bool s_sdWriteEnabled = false;
 
 static String makePrefix()
 {
@@ -38,28 +40,51 @@ static String makePrefix()
 void loggingInit()
 {
   // Mount SD en gång (single source of truth)
-  s_sdOk = sdcardInit();
+  bool sdOk = sdcardInit();
+  s_sdOk = sdOk;
 
-  if (!s_sdOk)
+  if (!sdOk)
   {
-    Serial.println("LOG: SD init failed (sdcardInit returned false). SD-only requested -> HALT.");
-    while (true)
-      delay(1000);
+    logSystem("SD init FAILED – running without SD");
+
+    if (REQUIRE_SD)
+    {
+      logSystem("SD required -> HALT");
+      while (true)
+      {
+        delay(1000);
+      }
+    }
+  }
+  else
+  {
+    logSystem("SD init OK");
   }
 
   // Verifiera att vi kan öppna loggfilen
   File f = SD_MMC.open(s_logPath.c_str(), FILE_APPEND);
   if (!f)
   {
-    Serial.println("LOG: SD mounted but cannot open /system.log for append -> HALT.");
-    while (true)
-      delay(1000);
+    Serial.println("LOG: SD mounted but cannot open /system.log for append.");
+    s_sdOk = false; // disable SD logging
+
+    if (REQUIRE_SD)
+    {
+      Serial.println("LOG: SD required -> HALT.");
+      while (true)
+        delay(1000);
+    }
+
+    // fortsätt utan SD
+    return;
   }
+
   f.println(makePrefix() + "LOG: start, path=" + s_logPath);
   f.flush();
   f.close();
 
   Serial.println("LOG: SD OK (already mounted), path=" + s_logPath);
+  s_sdWriteEnabled = s_sdOk;
 }
 
 // bool loggingSdOk() {

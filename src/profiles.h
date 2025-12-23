@@ -28,3 +28,5 @@ void setProfile(ProfileId id);
 
 const char *profileName(ProfileId id);
 bool profileFromString(const String &s, ProfileId &out);
+
+extern void pipelineOnProfileChanged(ProfileId newProfile);

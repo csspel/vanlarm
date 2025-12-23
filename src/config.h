@@ -14,6 +14,11 @@
 #define BOARD_I2C_SDA 15
 #define BOARD_I2C_SCL 7
 
+// ==== Storage policy ====
+// true  = systemet kräver SD (release-läge)
+// false = SD är valfri (pipeline/dev)
+constexpr bool REQUIRE_SD = false;
+
 // SD_MMC (1-bit)
 static const int PIN_SD_CLK = 38;
 static const int PIN_SD_CMD = 39;
@@ -49,6 +54,17 @@ static const char MQTT_TOPIC_ACK[] = "van/ellie/ack";
 
 static const char MQTT_TOPIC_VERSION[] = "van/ellie/tele/version";
 
+// ---- PIR ----
+// TODO: Sätt rätt pin för din PIR på T-SIM7080G-S3 bygget
+// ---- PIR ----
+constexpr int PIN_PIR_FRONT = 9; // PIR fram
+constexpr int PIN_PIR_BACK = 17; // PIR bak
+constexpr bool PIR_RISING_EDGE = true;
+
+// ---- PIR topics ----
+static const char MQTT_TOPIC_PIR[] = "van/ellie/tele/pir";
+static const char MQTT_TOPIC_CMD_ACK[] = "van/ellie/cmd/ack"; // server -> device ack (PIR_ACK)
+
 // Hur länge vi håller MQTT_ONLINE öppet för SUBs (Steg 3)
 constexpr uint32_t MQTT_ONLINE_WINDOW_MS = 8000UL; // 8 sek
 
@@ -58,3 +74,7 @@ static const char DEVICE_ID[] = "van_ellie";
 
 // Alive ska motsvara STOLEN-test: 120 s
 constexpr uint32_t ALIVE_INTERVAL_MS = 120000UL; // 2 min
+
+// ==== Storage policy ====
+// true  = systemet kräver SD (release-läge)
+// false = SD är valfri (pipeline/dev)

@@ -16,6 +16,8 @@ static Client *netClient = nullptr;
 static PubSubClient *mqttClient = nullptr;
 static uint32_t msgCounter = 0;
 
+extern void pipelineOnPirAck(uint32_t eventId);
+
 // Downlink state
 static String lastDownlinkRaw;
 static uint32_t lastAckMsgId = 0; // dedupe på ack_msg_id
@@ -106,6 +108,21 @@ static void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
 {
   String t(topic);
   String msg;
+  if (t == MQTT_TOPIC_CMD_ACK)
+  {
+    // Förväntat format:
+    // {"type":"PIR_ACK","event_id":123}
+    String typ = jsonGetString(msg, "type");
+    uint32_t eid = jsonGetUInt(msg, "event_id");
+    if (eid == 0)
+      eid = jsonGetUInt(msg, "pir_event_id"); // tolerant
+    if (typ.length() == 0 || typ == "PIR_ACK")
+    {
+      if (eid != 0)
+        pipelineOnPirAck(eid);
+    }
+    return;
+  }
   msg.reserve(length);
   for (unsigned int i = 0; i < length; i++)
     msg += (char)payload[i];
@@ -119,6 +136,23 @@ static void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
 
   logSystem("MQTT: RX topic=" + t + " payload=" + msg);
   lastDownlinkRaw = msg;
+
+  // Server-ACK för PIR-event (Risk 1 steg 2)
+  if (t == MQTT_TOPIC_CMD_ACK)
+  {
+    // Exempel: {"type":"PIR_ACK","pir_event_id":123}
+    String typ = jsonGetString(msg, "type");
+    uint32_t eid = jsonGetUInt(msg, "pir_event_id");
+    if (eid == 0)
+      eid = jsonGetUInt(msg, "event_id"); // tolerant
+
+    if ((typ.length() == 0 || typ == "PIR_ACK") && eid != 0)
+    {
+      pipelineOnPirAck(eid);
+      logSystem("MQTT: PIR_ACK received event_id=" + String(eid));
+    }
+    return;
+  }
 
   if (t != MQTT_TOPIC_DOWNLINK)
     return;
@@ -220,8 +254,11 @@ bool mqttConnect()
   mqttClient->subscribe(MQTT_TOPIC_DOWNLINK);
   logSystem("MQTT: subscribed " + String(MQTT_TOPIC_DOWNLINK));
 
+  mqttClient->subscribe(MQTT_TOPIC_CMD_ACK);
+  logSystem("MQTT: subscribed " + String(MQTT_TOPIC_CMD_ACK));
+
   // Publicera version vid varje connect (retain så HA alltid vet vad som kör)
-  mqttPublishVersion(true);
+  // mqttPublishVersion(true);
 
   return true;
 }
@@ -306,6 +343,33 @@ bool mqttPublishAlive()
 
   logSystem("MQTT: alive published OK, msg_id=" + msgId);
   return true;
+}
+
+bool mqttPublishPirEvent(uint32_t eventId, uint16_t count, uint32_t firstMs, uint32_t lastMs, uint8_t srcMask)
+
+{
+  if (!mqttClient || !mqttClient->connected())
+    return false;
+
+  const ProfileConfig &p = currentProfile();
+
+  String payload = "{";
+  payload += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  payload += "\"msg_id\":\"" + String(++msgCounter) + "\",";
+  payload += "\"type\":\"PIR\",";
+  payload += "\"pir_event_id\":" + String(eventId) + ",";
+  payload += "\"count\":" + String(count) + ",";
+  payload += "\"first_ms\":" + String(firstMs) + ",";
+  payload += "\"last_ms\":" + String(lastMs) + ",";
+  payload += "\"src_mask\":" + String(srcMask) + ",";
+  payload += "\"profile\":\"" + String(p.name) + "\",";
+  payload += "\"epoch_utc\":" + String(timeEpochUtc());
+  payload += "}";
+
+  bool ok = mqttClient->publish(MQTT_TOPIC_PIR, payload.c_str(), false);
+  logSystem(String("MQTT: PIR publish ") + (ok ? "OK" : "FAIL") +
+            " event_id=" + String(eventId) + " count=" + String(count));
+  return ok;
 }
 
 bool mqttPublishGpsSingle(const GpsFix &fx, bool fixOk)

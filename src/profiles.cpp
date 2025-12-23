@@ -8,10 +8,10 @@ static ProfileConfig profileTable[] = {
     {ProfileId::TRAVEL, "TRAVEL", 10 * 1000UL, 5 * 60 * 1000UL, 0, false, false},
 
     // PARKED: GPS single var 5 min, uplink var 5 min
-    {ProfileId::PARKED, "PARKED", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 30 * 1000UL, false, false},
+    {ProfileId::PARKED, "PARKED", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, false, false},
 
     // ALARM: GPS single var 5 min (backup om PIR missar), uplink var 5 min
-    {ProfileId::ALARM, "ALARM", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 30 * 1000UL, true, true},
+    {ProfileId::ALARM, "ALARM", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, true, true},
 
     // STOLEN: vill spåra — GPS single + uplink tätare
     {ProfileId::STOLEN, "STOLEN", 2 * 60 * 1000UL, 2 * 60 * 1000UL, 60 * 1000UL, false, false}};
@@ -41,6 +41,8 @@ const ProfileConfig &currentProfile()
 void setProfile(ProfileId id)
 {
   currentId = id;
+  extern void pipelineOnProfileChanged(ProfileId newProfile);
+  pipelineOnProfileChanged(id);
 }
 
 const char *profileName(ProfileId id)
