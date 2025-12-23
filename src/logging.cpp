@@ -39,7 +39,6 @@ static String makePrefix()
 
 void loggingInit()
 {
-  // Mount SD en gång (single source of truth)
   bool sdOk = sdcardInit();
   s_sdOk = sdOk;
 
@@ -51,15 +50,15 @@ void loggingInit()
     {
       logSystem("SD required -> HALT");
       while (true)
-      {
         delay(1000);
-      }
     }
+
+    // <-- VIKTIGT: försök inte SD_MMC.open() om inte mountat
+    s_sdWriteEnabled = false;
+    return;
   }
-  else
-  {
-    logSystem("SD init OK");
-  }
+
+  logSystem("SD init OK");
 
   // Verifiera att vi kan öppna loggfilen
   File f = SD_MMC.open(s_logPath.c_str(), FILE_APPEND);

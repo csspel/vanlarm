@@ -186,10 +186,10 @@ bool modemConnectData(const char *apn,
     }
 
     // 2) Mjuk SIM-check
-    if (!modemWaitForSimReady(20000UL))
-    {
-        logSystem("MODEM: SIM check failed, fortsätter ändå (litar på nätuppkopplingstest)");
-    }
+    //if (!modemWaitForSimReady(20000UL))
+    //{
+    //    logSystem("MODEM: SIM check failed, fortsätter ändå (litar på nätuppkopplingstest)");
+    //}
 
     // 3) Kolla nätregistrering
     bool alreadyNet = modem.isNetworkConnected();
@@ -222,6 +222,12 @@ bool modemConnectData(const char *apn,
         logSystem("MODEM: enable RF (CFUN=1)");
         modemSetCfun(1, 20000UL);
         delay(1000); // låt RF stabilisera innan vi väntar på registrering
+        
+        // SIM-check efter RF ON (CFUN=1) – annars kan SIM-status bli 0 och ge falsklarm
+        if (!modemWaitForSimReady(8000UL))
+        {
+            logSystem("MODEM: SIM not ready (non-fatal) – fortsätter och litar på nät-/data-test");
+        }
 
         if (!modemWaitForNetwork(netRegTimeoutMs))
         {
