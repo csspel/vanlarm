@@ -7,6 +7,9 @@
 .vscode/launch.json
 .vscode/ipch/
 
+# Secret files
+src/secrets.h
+
 # OS-skräp
 .DS_Store
 Thumbs.db
