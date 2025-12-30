@@ -17,6 +17,9 @@ void setup()
   esp_log_level_set("sdmmc_common", ESP_LOG_NONE);
   esp_log_level_set("sdmmc_cmd", ESP_LOG_NONE);
   esp_log_level_set("sdmmc_req", ESP_LOG_NONE);
+  esp_log_level_set("vfs_fat_sdmmc", ESP_LOG_NONE);
+  esp_log_level_set("diskio_sdmmc", ESP_LOG_NONE);
+  esp_log_level_set("sdmmc_sd", ESP_LOG_NONE);
 
   delay(2000);
   Serial.println("=== Campervanlarm – PIPELINE branch ===");

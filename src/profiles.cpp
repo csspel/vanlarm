@@ -5,16 +5,16 @@
 // Justera här – så följer main.cpp automatiskt med.
 static ProfileConfig profileTable[] = {
     // TRAVEL: GPS ofta, uplink var 5 min (batch kommer senare)
-    {ProfileId::TRAVEL, "TRAVEL", 10 * 1000UL, 5 * 60 * 1000UL, 0, false, false},
+    {ProfileId::TRAVEL, "TRAVEL", 10 * 1000UL, 5 * 60 * 1000UL, 0, 5 * 1000UL, false},
 
     // PARKED: GPS single var 5 min, uplink var 5 min
-    {ProfileId::PARKED, "PARKED", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, false, false},
+    {ProfileId::PARKED, "PARKED", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, 10 * 1000UL, false},
 
     // ALARM: GPS single var 5 min (backup om PIR missar), uplink var 5 min
-    {ProfileId::ALARM, "ALARM", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, true, true},
+    {ProfileId::ALARM, "ALARM", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, 10 * 1000UL, true},
 
     // STOLEN: vill spåra — GPS single + uplink tätare
-    {ProfileId::STOLEN, "STOLEN", 2 * 60 * 1000UL, 2 * 60 * 1000UL, 60 * 1000UL, false, false}};
+    {ProfileId::STOLEN, "STOLEN", 2 * 60 * 1000UL, 2 * 60 * 1000UL, 60 * 1000UL, 6 * 1000UL, false}};
 
 static ProfileId currentId = ProfileId::PARKED;
 

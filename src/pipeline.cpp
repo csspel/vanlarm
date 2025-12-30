@@ -336,7 +336,7 @@ void pipelineTick(uint32_t nowMs)
     case Step::STEP_GPS_COLLECT:
     {
         GpsFix fx;
-        bool ok = gpsGetFixWait(fx, 2000); // små “slices”, ej stor block
+        bool ok = gpsGetFixWait(fx, currentProfile().gpsFixWaitMs); // små “slices”, ej stor block
         if (ok)
         {
             g_gpsFix = fx;

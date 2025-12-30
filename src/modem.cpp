@@ -186,7 +186,7 @@ bool modemConnectData(const char *apn,
     }
 
     // 2) Mjuk SIM-check
-    //if (!modemWaitForSimReady(20000UL))
+    // if (!modemWaitForSimReady(20000UL))
     //{
     //    logSystem("MODEM: SIM check failed, fortsätter ändå (litar på nätuppkopplingstest)");
     //}
@@ -195,44 +195,71 @@ bool modemConnectData(const char *apn,
     bool alreadyNet = modem.isNetworkConnected();
     if (!alreadyNet)
     {
-        logSystem("MODEM: not network connected → doing full CFUN/APN setup");
-
-        // RF OFF
-        logSystem("MODEM: disable RF (CFUN=0)");
-        modemSetCfun(0, 20000UL); // ignorerar fel (loggas i helpern)
+        // Vi har ofta redan slagit CFUN=1 i pipeline (STEP_RF_ON). Försök därför
+        // en "snabb väg" först utan att toggla RF (CFUN=0/1) i onödan.
+        logSystem("MODEM: not network connected → try attach without RF toggle");
 
         modem.setNetworkMode(2);   // auto
         modem.setPreferredMode(3); // CAT-M + NB-IoT
 
-        // APN
+        // Säkerställ att RF är på (idempotent)
+        logSystem("MODEM: ensure RF ON (CFUN=1)");
+        modemSetCfun(1, 20000UL);
+
+        // APN (idempotent)
         logSystem("MODEM: set APN via CGDCONT/CNCFG");
+        // CGDCONT: PDP type "IP" + APN
         modem.sendAT("+CGDCONT=1,\"IP\",\"", apn, "\"");
         if (modem.waitResponse(5000UL) != 1)
         {
             logSystem("MODEM: CGDCONT failed");
         }
 
-        modem.sendAT("+CNCFG=0,1,\"", apn, "\"");
+        modem.sendAT("+CNCFG=0,1,"
+                     ", apn, "
+                     "");
         if (modem.waitResponse(5000UL) != 1)
         {
             logSystem("MODEM: CNCFG failed");
         }
 
-        // RF ON
-        logSystem("MODEM: enable RF (CFUN=1)");
-        modemSetCfun(1, 20000UL);
-        delay(1000); // låt RF stabilisera innan vi väntar på registrering
-        
-        // SIM-check efter RF ON (CFUN=1) – annars kan SIM-status bli 0 och ge falsklarm
-        if (!modemWaitForSimReady(8000UL))
-        {
-            logSystem("MODEM: SIM not ready (non-fatal) – fortsätter och litar på nät-/data-test");
-        }
-
+        // Vänta registrering
         if (!modemWaitForNetwork(netRegTimeoutMs))
         {
-            out.err = "net_timeout";
-            return false;
+            // Fallback: gör full setup med RF OFF/ON
+            logSystem("MODEM: attach failed → doing full CFUN/APN setup");
+
+            logSystem("MODEM: disable RF (CFUN=0)");
+            modemSetCfun(0, 20000UL); // ignorerar fel (loggas i helpern)
+
+            modem.setNetworkMode(2);   // auto
+            modem.setPreferredMode(3); // CAT-M + NB-IoT
+
+            logSystem("MODEM: set APN via CGDCONT/CNCFG");
+            // CGDCONT: PDP type "IP" + APN
+            modem.sendAT("+CGDCONT=1,\"IP\",\"", apn, "\"");
+            if (modem.waitResponse(5000UL) != 1)
+            {
+                logSystem("MODEM: CGDCONT failed");
+            }
+
+            modem.sendAT("+CNCFG=0,1,"
+                         ", apn, "
+                         "");
+            if (modem.waitResponse(5000UL) != 1)
+            {
+                logSystem("MODEM: CNCFG failed");
+            }
+
+            logSystem("MODEM: enable RF (CFUN=1)");
+            modemSetCfun(1, 20000UL);
+            delay(1000);
+
+            if (!modemWaitForNetwork(netRegTimeoutMs))
+            {
+                out.err = "net_timeout";
+                return false;
+            }
         }
     }
     else
