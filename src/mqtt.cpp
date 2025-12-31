@@ -108,21 +108,7 @@ static void mqttCallback(char *topic, uint8_t *payload, unsigned int length)
 {
   String t(topic);
   String msg;
-  if (t == MQTT_TOPIC_CMD_ACK)
-  {
-    // Förväntat format:
-    // {"type":"PIR_ACK","event_id":123}
-    String typ = jsonGetString(msg, "type");
-    uint32_t eid = jsonGetUInt(msg, "event_id");
-    if (eid == 0)
-      eid = jsonGetUInt(msg, "pir_event_id"); // tolerant
-    if (typ.length() == 0 || typ == "PIR_ACK")
-    {
-      if (eid != 0)
-        pipelineOnPirAck(eid);
-    }
-    return;
-  }
+
   msg.reserve(length);
   for (unsigned int i = 0; i < length; i++)
     msg += (char)payload[i];
@@ -402,6 +388,11 @@ bool mqttPublishGpsSingle(const GpsFix &fx, bool fixOk)
   payload += "\"time_local\":\"" + timeClockLocal() + "\",";
   payload += "\"profile\":\"" + String(currentProfile().name) + "\",";
   payload += "\"fix_ok\":" + String(fixOk ? "true" : "false") + ",";
+  payload += "\"start_mode\":\"" + String((fx.start_mode == 3) ? "HOT" : (fx.start_mode == 2) ? "WARM"
+                                                                     : (fx.start_mode == 1)   ? "COLD"
+                                                                                              : "UNKNOWN") +
+             "\",";
+  payload += "\"ttff_s\":" + String(fx.ttff_s) + ",";
   payload += "\"valid\":" + String(fx.valid ? "true" : "false") + ",";
   payload += "\"fix_age_ms\":" + String(fx.fix_age_ms) + ",";
   payload += "\"fix_mode\":" + String(fx.fix_mode) + ",";

@@ -1,5 +1,8 @@
+#include <Arduino.h>
+
 #include "gps.h"
 #include "logging.h"
+#include "config.h"
 
 // We reuse the same UART that TinyGSM uses.
 // SerialAT is defined in modem.cpp with external linkage.
@@ -9,6 +12,17 @@ static bool g_gpsOn = false;
 static bool g_hasFix = false;
 static GpsFix g_lastFix;
 static uint32_t g_lastFixAtMs = 0;
+
+// Track what start mode we requested (for logging)
+static const char *g_lastStartCmd = "AT+CGNSCOLD";
+
+// If not defined in config.h, use sane defaults
+#ifndef GPS_HOT_MAX_AGE_MS
+static constexpr uint32_t GPS_HOT_MAX_AGE_MS = 2UL * 60UL * 60UL * 1000UL; // 2h
+#endif
+#ifndef GPS_WARM_MAX_AGE_MS
+static constexpr uint32_t GPS_WARM_MAX_AGE_MS = 24UL * 60UL * 60UL * 1000UL; // 24h
+#endif
 
 // --- minimal AT helper ----------------------------------------------------
 static void atFlush()
@@ -64,7 +78,6 @@ static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLin
   uint32_t start = millis();
   String line;
   bool got = false;
-
   while (millis() - start < timeoutMs)
   {
     while (SerialAT.available())
@@ -100,12 +113,13 @@ static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLin
 }
 
 // --- CGNSINF parse --------------------------------------------------------
-// +CGNSINF: <GNSS run status>,<Fix status>,<UTC date & Time>,<Latitude>,<Longitude>,<MSL Altitude>,<Speed Over Ground>,<Course Over Ground>,<Fix Mode>,...
+// +CGNSINF: <run>,<fix>,<utc>,<lat>,<lon>,<alt>,<speed>,<course>,<fixmode>,...
 static bool parseCgnsinf(const String &line, GpsFix &out)
 {
   int colon = line.indexOf(':');
   if (colon < 0)
     return false;
+
   String csv = line.substring(colon + 1);
   csv.trim();
 
@@ -128,32 +142,66 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
 
   int run = f[0].toInt();
   int fix = f[1].toInt();
+
   out.utc = f[2];
   out.utc.trim();
 
   out.lat = f[3].toDouble();
   out.lon = f[4].toDouble();
   out.alt_m = f[5].toDouble();
-  double sog = f[6].toDouble(); // usually km/h on SIMCom
-  out.speed_kmh = sog;
+
+  // SIMCom brukar ge km/h här (men vi behåller som "speed_kmh" som du redan gör)
+  out.speed_kmh = f[6].toDouble();
   out.course_deg = f[7].toDouble();
   out.fix_mode = (uint8_t)f[8].toInt();
 
-  out.valid = (run == 1) && (fix == 1) && (out.utc.length() >= 8) && (abs(out.lat) > 0.0001 || abs(out.lon) > 0.0001);
+  out.valid = (run == 1) && (fix == 1) && (out.utc.length() >= 8) &&
+              (abs(out.lat) > 0.0001 || abs(out.lon) > 0.0001);
+
   out.fix_age_ms = 0;
   return true;
 }
 
-// void gpsInit() {
-//   // do nothing here; UART is initialized by modemInitUartAndPins()
-// }
+static const char *pickStartCmd()
+{
+  // Ingen tidigare fix i RAM → cold
+  if (!g_hasFix)
+    return "AT+CGNSCOLD";
+
+  uint32_t age = millis() - g_lastFixAtMs;
+  if (age <= GPS_HOT_MAX_AGE_MS)
+    return "AT+CGNSHOT";
+  if (age <= GPS_WARM_MAX_AGE_MS)
+    return "AT+CGNSWARM";
+  return "AT+CGNSCOLD";
+}
+
+static const char *cmdToMode(const char *cmd)
+{
+  if (!cmd)
+    return "UNKNOWN";
+  if (strcmp(cmd, "AT+CGNSHOT") == 0)
+    return "HOT";
+  if (strcmp(cmd, "AT+CGNSWARM") == 0)
+    return "WARM";
+  if (strcmp(cmd, "AT+CGNSCOLD") == 0)
+    return "COLD";
+  return "UNKNOWN";
+}
+
+// -------------------------------------------------------------------------
+
+void gpsInit()
+{
+  // UART is initialized elsewhere (modem.cpp)
+}
 
 bool gpsPowerOn()
 {
   if (g_gpsOn)
     return true;
 
-  // Configure output format before power on (harmless if module ignores it).
+  // Configure output format before power on (harmless if module ignores it)
   atCmdOk("AT+CGNSCFG=0", 2000);
 
   if (!atCmdOk("AT+CGNSPWR=1", 5000))
@@ -162,7 +210,14 @@ bool gpsPowerOn()
     return false;
   }
 
-  // Request RMC output when available; tolerated if unsupported.
+  // Select start mode (HOT/WARM/COLD) to reduce TTFF when we have recent fixes
+  const char *startCmd = pickStartCmd();
+  g_lastStartCmd = startCmd;
+
+  bool startOk = atCmdOk(String(startCmd), 2000);
+  logSystem(String("GPS: start=") + cmdToMode(startCmd) + " cmd_ok=" + (startOk ? "1" : "0"));
+
+  // Request RMC output when available; tolerated if unsupported
   atCmdOk("AT+CGNSSEQ=RMC", 2000);
 
   g_gpsOn = true;
@@ -178,7 +233,7 @@ bool gpsPowerOff()
   if (!atCmdOk("AT+CGNSPWR=0", 5000))
   {
     logSystem("GPS: CGNSPWR=0 failed");
-    // still mark off to avoid stuck state
+    // mark off anyway to avoid stuck state
   }
   g_gpsOn = false;
   logSystem("GPS: OFF");
@@ -193,6 +248,7 @@ bool gpsIsOn()
 bool gpsPollOnce(GpsFix &out)
 {
   out = GpsFix{};
+
   if (!g_gpsOn)
   {
     if (!gpsPowerOn())
@@ -218,22 +274,30 @@ bool gpsPollOnce(GpsFix &out)
 
 bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
 {
-  uint32_t start = millis();
+  uint32_t startMs = millis();
   uint32_t attempt = 0;
 
   if (!gpsPowerOn())
     return false;
 
-  while (millis() - start < maxWaitMs)
+  while (millis() - startMs < maxWaitMs)
   {
     attempt++;
+
     GpsFix tmp;
     bool ok = gpsPollOnce(tmp);
+
     if (ok && tmp.valid)
     {
       tmp.fix_age_ms = 0;
       out = tmp;
-      logSystem("GPS: FIX OK lat=" + String(tmp.lat, 6) + " lon=" + String(tmp.lon, 6) + " spd=" + String(tmp.speed_kmh, 1));
+
+      uint32_t ttff_s = (millis() - startMs) / 1000UL;
+      logSystem(String("GPS: FIX OK lat=") + String(tmp.lat, 6) +
+                " lon=" + String(tmp.lon, 6) +
+                " spd=" + String(tmp.speed_kmh, 1) +
+                " ttff_s=" + String(ttff_s) +
+                " start=" + cmdToMode(g_lastStartCmd));
       return true;
     }
 
@@ -245,7 +309,9 @@ bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
     }
 
     if (attempt == 1)
-      logSystem("GPS: waiting for fix...");
+    {
+      logSystem(String("GPS: waiting for fix... start=") + cmdToMode(g_lastStartCmd));
+    }
     delay(1000);
   }
 
@@ -255,7 +321,9 @@ bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
     out = g_lastFix;
     out.fix_age_ms = millis() - g_lastFixAtMs;
   }
-  logSystem("GPS: FIX TIMEOUT after " + String(maxWaitMs / 1000) + "s");
+
+  logSystem(String("GPS: FIX TIMEOUT after ") + String(maxWaitMs / 1000) +
+            "s start=" + cmdToMode(g_lastStartCmd));
   return false;
 }
 
