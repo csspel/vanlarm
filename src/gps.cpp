@@ -16,14 +16,6 @@ static uint32_t g_lastFixAtMs = 0;
 // Track what start mode we requested (for logging)
 static const char *g_lastStartCmd = "AT+CGNSCOLD";
 
-// If not defined in config.h, use sane defaults
-#ifndef GPS_HOT_MAX_AGE_MS
-static constexpr uint32_t GPS_HOT_MAX_AGE_MS = 2UL * 60UL * 60UL * 1000UL; // 2h
-#endif
-#ifndef GPS_WARM_MAX_AGE_MS
-static constexpr uint32_t GPS_WARM_MAX_AGE_MS = 24UL * 60UL * 60UL * 1000UL; // 24h
-#endif
-
 // --- minimal AT helper ----------------------------------------------------
 static void atFlush()
 {
@@ -150,7 +142,6 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
   out.lon = f[4].toDouble();
   out.alt_m = f[5].toDouble();
 
-  // SIMCom brukar ge km/h här (men vi behåller som "speed_kmh" som du redan gör)
   out.speed_kmh = f[6].toDouble();
   out.course_deg = f[7].toDouble();
   out.fix_mode = (uint8_t)f[8].toInt();
@@ -169,6 +160,8 @@ static const char *pickStartCmd()
     return "AT+CGNSCOLD";
 
   uint32_t age = millis() - g_lastFixAtMs;
+
+  // Dessa finns i config.h (du har dem redan)
   if (age <= GPS_HOT_MAX_AGE_MS)
     return "AT+CGNSHOT";
   if (age <= GPS_WARM_MAX_AGE_MS)
