@@ -66,7 +66,7 @@ static const char MQTT_TOPIC_CMD_ACK[] = "van/ellie/cmd/pir_ack";
 static const char MQTT_TOPIC_ACK[] = "van/ellie/ack";
 static const char MQTT_TOPIC_VERSION[] = "van/ellie/tele/version";
 
-constexpr uint32_t MQTT_ONLINE_WINDOW_MS = 8000UL; // 8 s
+constexpr uint32_t MQTT_ONLINE_WINDOW_MS = 30000UL; // 30 s
 
 static const char DEVICE_ID[] = "van_ellie";
 

@@ -218,6 +218,7 @@ bool mqttConnect()
 
   logSystem("MQTT: connecting to broker");
   mqttClient->setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+  logSystem(String("MQTT: host=") + MQTT_BROKER_HOST + ":" + String(MQTT_BROKER_PORT));
 
   bool ok;
   if (strlen(MQTT_USERNAME) > 0)

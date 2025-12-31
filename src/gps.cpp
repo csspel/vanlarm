@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include "time_manager.h"
 
 #include "gps.h"
 #include "logging.h"
@@ -155,13 +156,13 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
 
 static const char *pickStartCmd()
 {
-  // Ingen tidigare fix i RAM → cold
+  if (!timeIsValid())
+    return "AT+CGNSCOLD"; // ingen tid -> cold
+
   if (!g_hasFix)
-    return "AT+CGNSCOLD";
+    return "AT+CGNSWARM"; // tid finns -> warm även utan fix
 
   uint32_t age = millis() - g_lastFixAtMs;
-
-  // Dessa finns i config.h (du har dem redan)
   if (age <= GPS_HOT_MAX_AGE_MS)
     return "AT+CGNSHOT";
   if (age <= GPS_WARM_MAX_AGE_MS)
