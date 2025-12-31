@@ -1,5 +1,4 @@
 #include "pipeline.h"
-
 #include "config.h"
 #include "logging.h"
 #include "modem.h"
@@ -11,7 +10,6 @@
 // ==============================
 // PIR Outbox (server-ack driven)
 // ==============================
-
 struct PirOutbox
 {
     bool pending = false;
@@ -22,29 +20,20 @@ struct PirOutbox
     uint32_t last_ms = 0;
     uint8_t src_mask = 0; // bit0=front, bit1=back
 };
+
 static PirOutbox g_pir;
 
 static volatile uint16_t g_pirIsrCount = 0;
-static volatile bool g_pirIsrFlag = false;
-
 static volatile uint8_t g_pirIsrMask = 0; // bit0=front, bit1=back
-
-static uint32_t g_nextEventId = 1; // TODO: om du vill: persist i NVS/SD senare
+static uint32_t g_nextEventId = 1;        // TODO: persist i NVS/SD senare
 
 static bool g_alarmGpsSkipUsed = false; // skip GPS EN gång per ALARM-episod
-
-static void IRAM_ATTR isrPir()
-{
-    g_pirIsrCount++;
-    g_pirIsrFlag = true;
-}
 
 static void IRAM_ATTR isrPirFront()
 {
     g_pirIsrCount++;
     g_pirIsrMask |= 0x01;
 }
-
 static void IRAM_ATTR isrPirBack()
 {
     g_pirIsrCount++;
@@ -55,7 +44,6 @@ static void pirIngestIsr(uint32_t nowMs)
 {
     uint16_t n;
     uint8_t mask;
-
     noInterrupts();
     n = g_pirIsrCount;
     mask = g_pirIsrMask;
@@ -73,7 +61,8 @@ static void pirIngestIsr(uint32_t nowMs)
         g_pir.event_id = g_nextEventId++;
         g_pir.count = 0;
         g_pir.first_ms = nowMs;
-        g_pir.src_mask = 0; // <-- lägg till i PirOutbox (se nedan)
+        g_pir.last_ms = nowMs;
+        g_pir.src_mask = 0;
     }
 
     g_pir.count = (uint16_t)(g_pir.count + n);
@@ -84,7 +73,6 @@ static void pirIngestIsr(uint32_t nowMs)
 // ==============================
 // Pipeline state machine
 // ==============================
-
 enum class Step
 {
     STEP_DECIDE = 0,
@@ -106,9 +94,7 @@ enum class Step
 static Step g_step = Step::STEP_DECIDE;
 static uint32_t g_stepEnterMs = 0;
 static uint32_t g_deadlineMs = 0;
-
 static uint32_t g_nextCommAtMs = 0;
-
 static bool g_needComm = false;
 
 // GPS result for this cycle
@@ -124,6 +110,10 @@ enum class GpsPlan
 static GpsPlan g_gpsPlan = GpsPlan::NONE;
 static uint32_t g_gpsCollectTimeoutMs = 0;
 
+// non-blocking GPS poll control
+static uint32_t g_gpsNextPollMs = 0;
+static constexpr uint32_t GPS_POLL_INTERVAL_MS = 1000UL;
+
 static void stepEnter(Step s, uint32_t nowMs)
 {
     g_step = s;
@@ -132,7 +122,7 @@ static void stepEnter(Step s, uint32_t nowMs)
     switch (s)
     {
     case Step::STEP_DECIDE:
-        // nothing
+        // no deadline here
         break;
 
     case Step::STEP_GPS_ON:
@@ -142,11 +132,12 @@ static void stepEnter(Step s, uint32_t nowMs)
         break;
 
     case Step::STEP_GPS_WARMUP:
-        g_deadlineMs = nowMs + 1500; // 1.5 s settle time
+        g_deadlineMs = nowMs + 1500UL; // 1.5 s settle time
         break;
 
     case Step::STEP_GPS_COLLECT:
         g_deadlineMs = nowMs + g_gpsCollectTimeoutMs;
+        g_gpsNextPollMs = nowMs; // poll direkt
         break;
 
     case Step::STEP_GPS_OFF:
@@ -156,7 +147,6 @@ static void stepEnter(Step s, uint32_t nowMs)
 
     case Step::STEP_RF_ON:
         gpsPowerOff(); // säkerställ GNSS OFF innan RF
-        // modemRfOn();  // <-- du har redan denna funktion
         g_deadlineMs = nowMs + 200UL;
         break;
 
@@ -173,7 +163,8 @@ static void stepEnter(Step s, uint32_t nowMs)
         break;
 
     case Step::STEP_RX_DOWNLINK:
-        g_deadlineMs = nowMs + 5000UL; // kort rx-fönster för ack/downlink
+        // längre rx-fönster om PIR väntar på ack
+        g_deadlineMs = nowMs + (g_pir.pending ? 30000UL : 5000UL);
         break;
 
     case Step::STEP_MQTT_DISCONNECT:
@@ -187,12 +178,10 @@ static void stepEnter(Step s, uint32_t nowMs)
         break;
 
     case Step::STEP_ALARM_WAIT:
-        // max 4 min (men vi bryter direkt vid PIR)
         g_deadlineMs = nowMs + 4UL * 60UL * 1000UL;
         break;
 
     case Step::STEP_PARKED_WAIT:
-        // vänta till nästa comm
         g_deadlineMs = g_nextCommAtMs;
         break;
     }
@@ -206,7 +195,6 @@ static bool stepTimedOut(uint32_t nowMs)
 // ==============================
 // Hooks från andra moduler
 // ==============================
-
 void pipelineOnPirAck(uint32_t eventId)
 {
     if (g_pir.pending && g_pir.event_id == eventId)
@@ -217,18 +205,14 @@ void pipelineOnPirAck(uint32_t eventId)
 
 void pipelineOnProfileChanged(ProfileId newProfile)
 {
-    // När profilen byts: nollställ “skip GPS en gång”
-    // (din regel: nollställ vid profilbyte, så nästa ALARM-episod kan skippa igen)
+    // Nollställ “skip GPS en gång” vid profilbyte
     g_alarmGpsSkipUsed = false;
-
-    // Om du vill vara stenhård: också nollställ scheman
     (void)newProfile;
 }
 
 // ==============================
 // Init + tick
 // ==============================
-
 void pipelineInit()
 {
     // Starta med RF & GPS av
@@ -237,13 +221,13 @@ void pipelineInit()
 
     g_nextCommAtMs = millis() + 2000UL;
 
-    // PIR pin: du måste sätta detta i config.h
+    // PIR
     pinMode(PIN_PIR_FRONT, INPUT);
     pinMode(PIN_PIR_BACK, INPUT);
-
     int mode = PIR_RISING_EDGE ? RISING : FALLING;
     attachInterrupt(digitalPinToInterrupt(PIN_PIR_FRONT), isrPirFront, mode);
     attachInterrupt(digitalPinToInterrupt(PIN_PIR_BACK), isrPirBack, mode);
+
     stepEnter(Step::STEP_DECIDE, millis());
 }
 
@@ -260,7 +244,6 @@ void pipelineTick(uint32_t nowMs)
     {
         const auto &p = currentProfile();
 
-        // Behöver vi kommunicera?
         bool commDue = ((int32_t)(nowMs - g_nextCommAtMs) >= 0);
         g_needComm = g_pir.pending || commDue;
 
@@ -285,14 +268,32 @@ void pipelineTick(uint32_t nowMs)
                 else
                 {
                     g_gpsPlan = (p.gpsFixWaitMs > 0) ? GpsPlan::SINGLE : GpsPlan::NONE;
-                    g_gpsCollectTimeoutMs = (p.gpsFixWaitMs > 0) ? p.gpsFixWaitMs : 0;
+                    if (p.gpsFixWaitMs > 0)
+                    {
+                        uint32_t waitMs = p.gpsFixWaitMs;
+
+                        // Om vi aldrig haft fix i RAM: ge GNSS mer tid (inomhus kan behöva flera minuter)
+                        if (!gpsHasLastFix() && waitMs < 300000UL)
+                            waitMs = 300000UL; // 5 min
+
+                        g_gpsCollectTimeoutMs = waitMs;
+                    }
                 }
             }
             else
             {
                 // PARKED/TRAVEL: single fix om fixWaitMs > 0
                 g_gpsPlan = (p.gpsFixWaitMs > 0) ? GpsPlan::SINGLE : GpsPlan::NONE;
-                g_gpsCollectTimeoutMs = (p.gpsFixWaitMs > 0) ? p.gpsFixWaitMs : 0;
+                if (p.gpsFixWaitMs > 0)
+                {
+                    uint32_t waitMs = p.gpsFixWaitMs;
+
+                    // Om vi aldrig haft fix i RAM: ge GNSS mer tid
+                    if (!gpsHasLastFix() && waitMs < 300000UL)
+                        waitMs = 300000UL; // 5 min
+
+                    g_gpsCollectTimeoutMs = waitMs;
+                }
             }
         }
 
@@ -301,10 +302,8 @@ void pipelineTick(uint32_t nowMs)
             // Vänta enligt profil
             if (p.id == ProfileId::ALARM)
                 stepEnter(Step::STEP_ALARM_WAIT, nowMs);
-            else if (p.id == ProfileId::PARKED)
-                stepEnter(Step::STEP_PARKED_WAIT, nowMs);
             else
-                stepEnter(Step::STEP_PARKED_WAIT, nowMs); // TRAVEL: enkelhet, periodisk comm
+                stepEnter(Step::STEP_PARKED_WAIT, nowMs);
             break;
         }
 
@@ -313,37 +312,36 @@ void pipelineTick(uint32_t nowMs)
             stepEnter(Step::STEP_GPS_ON, nowMs);
         else
             stepEnter(Step::STEP_RF_ON, nowMs);
-
         break;
     }
 
     // ---------------- GPS ----------------
     case Step::STEP_GPS_ON:
-    {
-        // inga krav, gå vidare snabbt
         stepEnter(Step::STEP_GPS_WARMUP, nowMs);
-
         break;
-    }
 
     case Step::STEP_GPS_WARMUP:
         if (stepTimedOut(nowMs))
-        {
             stepEnter(Step::STEP_GPS_COLLECT, nowMs);
-        }
         break;
 
     case Step::STEP_GPS_COLLECT:
     {
-        GpsFix fx;
-        bool ok = gpsGetFixWait(fx, currentProfile().gpsFixWaitMs); // små “slices”, ej stor block
-        if (ok)
+        // Non-blocking: poll CGNSINF ungefär 1 Hz tills fix eller deadline.
+        if ((int32_t)(nowMs - g_gpsNextPollMs) >= 0)
         {
-            g_gpsFix = fx;
-            g_gpsFixOk = true;
-            g_gpsHave = true;
-            stepEnter(Step::STEP_GPS_OFF, nowMs);
-            break;
+            g_gpsNextPollMs = nowMs + GPS_POLL_INTERVAL_MS;
+
+            GpsFix fx;
+            bool ok = gpsPollOnce(fx);
+            if (ok && fx.valid)
+            {
+                g_gpsFix = fx;
+                g_gpsFixOk = true;
+                g_gpsHave = true;
+                stepEnter(Step::STEP_GPS_OFF, nowMs);
+                break;
+            }
         }
 
         if (stepTimedOut(nowMs))
@@ -357,26 +355,21 @@ void pipelineTick(uint32_t nowMs)
     }
 
     case Step::STEP_GPS_OFF:
-    {
         stepEnter(Step::STEP_RF_ON, nowMs);
         break;
-    }
 
     // ---------------- RF + NET + MQTT ----------------
     case Step::STEP_RF_ON:
-    {
         stepEnter(Step::STEP_NET_ATTACH, nowMs);
         break;
-    }
 
     case Step::STEP_NET_ATTACH:
     {
         NetResult net;
         bool ok = modemConnectData(APN, NET_REG_TIMEOUT_MS, DATA_ATTACH_TIMEOUT_MS, net);
-
         if (ok)
         {
-            // sync time best effort (du har redan dessa funktioner)
+            // sync time best effort
             timeSyncFromModem();
             timeSyncFromNtp(8000);
             stepEnter(Step::STEP_MQTT_CONNECT, nowMs);
@@ -385,7 +378,6 @@ void pipelineTick(uint32_t nowMs)
 
         if (stepTimedOut(nowMs))
         {
-            // backoff: planera nästa försök
             const auto &p = currentProfile();
             g_nextCommAtMs = nowMs + p.commIntervalMs;
             stepEnter(Step::STEP_RF_OFF, nowMs);
@@ -394,14 +386,11 @@ void pipelineTick(uint32_t nowMs)
     }
 
     case Step::STEP_MQTT_CONNECT:
-    {
         if (mqttConnect())
         {
-
             stepEnter(Step::STEP_PUBLISH, nowMs);
             break;
         }
-
         if (stepTimedOut(nowMs))
         {
             const auto &p = currentProfile();
@@ -409,17 +398,15 @@ void pipelineTick(uint32_t nowMs)
             stepEnter(Step::STEP_MQTT_DISCONNECT, nowMs);
         }
         break;
-    }
 
     case Step::STEP_PUBLISH:
-    {
         // GPS (single)
         if (g_gpsHave)
         {
             mqttPublishGpsSingle(g_gpsFix, g_gpsFixOk);
         }
 
-        // PIR event (outbox, rensas INTE här)
+        // PIR event (outbox rensas INTE här)
         if (g_pir.pending)
         {
             mqttPublishPirEvent(g_pir.event_id, g_pir.count, g_pir.first_ms, g_pir.last_ms, g_pir.src_mask);
@@ -430,23 +417,18 @@ void pipelineTick(uint32_t nowMs)
 
         stepEnter(Step::STEP_RX_DOWNLINK, nowMs);
         break;
-    }
 
     case Step::STEP_RX_DOWNLINK:
-    {
         mqttLoop();
         if (stepTimedOut(nowMs))
         {
             stepEnter(Step::STEP_MQTT_DISCONNECT, nowMs);
         }
         break;
-    }
 
     case Step::STEP_MQTT_DISCONNECT:
-    {
         stepEnter(Step::STEP_RF_OFF, nowMs);
         break;
-    }
 
     case Step::STEP_RF_OFF:
     {
@@ -460,7 +442,6 @@ void pipelineTick(uint32_t nowMs)
         }
         else if (g_pir.pending)
         {
-            // failsafe: låt inte PIR blockera GPS för evigt
             logSystem("PIR: pending without ack (will retry later)");
         }
 
@@ -471,8 +452,6 @@ void pipelineTick(uint32_t nowMs)
         // Gå till WAIT enligt profil
         if (p.id == ProfileId::ALARM)
             stepEnter(Step::STEP_ALARM_WAIT, nowMs);
-        else if (p.id == ProfileId::PARKED)
-            stepEnter(Step::STEP_PARKED_WAIT, nowMs);
         else
             stepEnter(Step::STEP_PARKED_WAIT, nowMs);
         break;
@@ -480,30 +459,23 @@ void pipelineTick(uint32_t nowMs)
 
     // ---------------- WAIT ----------------
     case Step::STEP_ALARM_WAIT:
-    {
-        // Bryt direkt om PIR triggar igen (outbox pending)
         if (g_pir.pending)
         {
-            // force immediate comm
-            g_nextCommAtMs = nowMs;
+            g_nextCommAtMs = nowMs; // force immediate comm
             stepEnter(Step::STEP_DECIDE, nowMs);
             break;
         }
-        // timeout 4 min: ingen heartbeat – bara “omvärdera”
         if (stepTimedOut(nowMs))
         {
             stepEnter(Step::STEP_DECIDE, nowMs);
         }
         break;
-    }
 
     case Step::STEP_PARKED_WAIT:
-    {
         if ((int32_t)(nowMs - g_nextCommAtMs) >= 0)
         {
             stepEnter(Step::STEP_DECIDE, nowMs);
         }
         break;
-    }
     }
 }

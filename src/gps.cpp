@@ -251,6 +251,13 @@ bool gpsPollOnce(GpsFix &out)
 
   String line;
   bool ok = atCmdGetLine("AT+CGNSINF", "+CGNSINF:", line, 2000);
+  static uint32_t lastDbg = 0;
+  if (millis() - lastDbg > 10000)
+  {
+    logSystem(String("GPS: CGNSINF raw=") + line);
+    lastDbg = millis();
+  }
+
   if (!ok)
     return false;
 
