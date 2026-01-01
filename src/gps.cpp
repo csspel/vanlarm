@@ -172,7 +172,17 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
       (fabs(out.lon - 15.0) < 0.05) &&
       (fabs(out.alt_m + 32.0) < 10.0);
 
-  const bool coordsLookReal = !placeholder && (fabs(out.lat) > 0.0001 || fabs(out.lon) > 0.0001);
+  const bool nearZero =
+      (fabs(out.lat) < 0.001) &&
+      (fabs(out.lon) < 0.001);
+
+  const bool coordsLookReal =
+      !placeholder &&
+      !nearZero &&
+      (fabs(out.lat) > 0.0001 || fabs(out.lon) > 0.0001);
+
+  const bool coordsRangeOk = (out.lat >= -90.0 && out.lat <= 90.0 && out.lon >= -180.0 && out.lon <= 180.0);
+
   const bool dopLooksOk = (hdop > 0.0f && hdop < 200.0f); // 500 => skit
   const bool satsLooksOk = (satsUsed >= 4);               // 4+ brukar vara OK för fix
 
@@ -184,6 +194,7 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
   //   eller (fixfält tomt men sats+hdop ser bra ut)
   out.valid = (run == 1) &&
               (out.utc.length() >= 8) &&
+              coordsRangeOk &&
               coordsLookReal &&
               ((fix == 1) || (!fixFieldPresent && satsLooksOk && dopLooksOk));
 
@@ -201,13 +212,13 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
 
 static const char *pickStartCmd()
 {
-  // ingen tid -> cold (snabbt in -> men ofta sämre TTFF)
+  // Ingen tid -> cold
   if (!timeIsValid())
     return "AT+CGNSCOLD";
 
-  // tid finns -> warm även om vi inte har fix i RAM
+  // Ingen tidigare fix -> kör cold (stabilt, särskilt efter FW-uppdatering)
   if (!g_hasFix)
-    return "AT+CGNSWARM";
+    return "AT+CGNSCOLD";
 
   uint32_t age = millis() - g_lastFixAtMs;
   if (age <= GPS_HOT_MAX_AGE_MS)
@@ -327,6 +338,48 @@ bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
 
   if (!gpsPowerOn())
     return false;
+
+  uint32_t stageStart = millis();
+  enum
+  {
+    ST_HOT,
+    ST_WARM,
+    ST_COLD
+  } stage;
+
+  const char *cmd = pickStartCmd();
+  stage = (strcmp(cmd, "AT+CGNSHOT") == 0) ? ST_HOT : (strcmp(cmd, "AT+CGNSWARM") == 0) ? ST_WARM
+                                                                                        : ST_COLD;
+
+  while (millis() - startMs < maxWaitMs)
+  {
+    GpsFix tmp;
+    bool ok = gpsPollOnce(tmp);
+
+    if (ok && tmp.valid)
+    {
+      out = tmp;
+      return true;
+    }
+
+    // Eskalera om vi inte når fix
+    uint32_t t = millis() - stageStart;
+
+    if (stage == ST_HOT && t > 20000UL)
+    {
+      atCmdOk("AT+CGNSWARM");
+      stage = ST_WARM;
+      stageStart = millis();
+    }
+    else if (stage == ST_WARM && t > 90000UL)
+    {
+      atCmdOk("AT+CGNSCOLD");
+      stage = ST_COLD;
+      stageStart = millis();
+    }
+
+    delay(1000);
+  }
 
   while (millis() - startMs < maxWaitMs)
   {

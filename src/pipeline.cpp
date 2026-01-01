@@ -339,6 +339,11 @@ void pipelineTick(uint32_t nowMs)
                 g_gpsFix = fx;
                 g_gpsFixOk = true;
                 g_gpsHave = true;
+                logSystem(String("GPS: FIX OK lat=") + String(g_gpsFix.lat, 6) +
+                          " lon=" + String(g_gpsFix.lon, 6) +
+                          " alt=" + String(g_gpsFix.alt_m, 1) +
+                          " spd=" + String(g_gpsFix.speed_kmh, 1) +
+                          " fix_mode=" + String(g_gpsFix.fix_mode));
                 stepEnter(Step::STEP_GPS_OFF, nowMs);
                 break;
             }
@@ -349,6 +354,11 @@ void pipelineTick(uint32_t nowMs)
             // timeout: fortsätt ändå utan GPS
             g_gpsHave = false;
             g_gpsFixOk = false;
+            logSystem(String("GPS: FIX OK lat=") + String(g_gpsFix.lat, 6) +
+                      " lon=" + String(g_gpsFix.lon, 6) +
+                      " alt=" + String(g_gpsFix.alt_m, 1) +
+                      " spd=" + String(g_gpsFix.speed_kmh, 1) +
+                      " fix_mode=" + String(g_gpsFix.fix_mode));
             stepEnter(Step::STEP_GPS_OFF, nowMs);
         }
         break;
