@@ -1,9 +1,10 @@
 #include <Arduino.h>
-#include "time_manager.h"
+#include <math.h>
 
 #include "gps.h"
 #include "logging.h"
 #include "config.h"
+#include "time_manager.h"
 
 // We reuse the same UART that TinyGSM uses.
 // SerialAT is defined in modem.cpp with external linkage.
@@ -68,9 +69,11 @@ static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLin
 {
   atFlush();
   SerialAT.println(cmd);
+
   uint32_t start = millis();
   String line;
   bool got = false;
+
   while (millis() - start < timeoutMs)
   {
     while (SerialAT.available())
@@ -78,6 +81,7 @@ static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLin
       char c = (char)SerialAT.read();
       if (c == '\r')
         continue;
+
       if (c == '\n')
       {
         line.trim();
@@ -107,6 +111,9 @@ static bool atCmdGetLine(const String &cmd, const String &prefix, String &outLin
 
 // --- CGNSINF parse --------------------------------------------------------
 // +CGNSINF: <run>,<fix>,<utc>,<lat>,<lon>,<alt>,<speed>,<course>,<fixmode>,...
+//
+// OBS: På vissa FW kan <fix> vara tomt: "1,,2025...." trots att lat/lon blir riktiga.
+// Då måste vi ha en fallbackbedömning baserat på lat/lon + DOP + satelliter.
 static bool parseCgnsinf(const String &line, GpsFix &out)
 {
   int colon = line.indexOf(':');
@@ -117,7 +124,7 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
   csv.trim();
 
   // split (keep empty fields)
-  const int MAXF = 20;
+  const int MAXF = 32;
   String f[MAXF];
   int n = 0;
   int start = 0;
@@ -134,7 +141,8 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
     return false;
 
   int run = f[0].toInt();
-  int fix = f[1].toInt();
+  int fix = f[1].toInt(); // kan bli 0 om fältet är tomt
+  const bool fixFieldPresent = (f[1].length() > 0);
 
   out.utc = f[2];
   out.utc.trim();
@@ -147,20 +155,59 @@ static bool parseCgnsinf(const String &line, GpsFix &out)
   out.course_deg = f[7].toDouble();
   out.fix_mode = (uint8_t)f[8].toInt();
 
-  out.valid = (run == 1) && (fix == 1) && (out.utc.length() >= 8) &&
-              (abs(out.lat) > 0.0001 || abs(out.lon) > 0.0001);
+  // I dina loggar verkar DOP ligga här:
+  //  index 10 = hdop-ish (0.1 / 500.0 / 41.5 ...)
+  //  index 14 = sats used (2 / 4 ...)
+  float hdop = 999.0f;
+  if (n > 10 && f[10].length() > 0)
+    hdop = f[10].toFloat();
+
+  int satsUsed = 0;
+  if (n > 14 && f[14].length() > 0)
+    satsUsed = f[14].toInt();
+
+  // Placeholder/dummy som du såg: 62,15,-32
+  const bool placeholder =
+      (fabs(out.lat - 62.0) < 0.05) &&
+      (fabs(out.lon - 15.0) < 0.05) &&
+      (fabs(out.alt_m + 32.0) < 10.0);
+
+  const bool coordsLookReal = !placeholder && (fabs(out.lat) > 0.0001 || fabs(out.lon) > 0.0001);
+  const bool dopLooksOk = (hdop > 0.0f && hdop < 200.0f); // 500 => skit
+  const bool satsLooksOk = (satsUsed >= 4);               // 4+ brukar vara OK för fix
+
+  // Valid-regel:
+  // - run=1
+  // - tid finns
+  // - coords ser rimliga ut
+  // - antingen fix==1 (normal)
+  //   eller (fixfält tomt men sats+hdop ser bra ut)
+  out.valid = (run == 1) &&
+              (out.utc.length() >= 8) &&
+              coordsLookReal &&
+              ((fix == 1) || (!fixFieldPresent && satsLooksOk && dopLooksOk));
 
   out.fix_age_ms = 0;
+
+  // Extra: om vi godkänner via fallback kan det vara bra att veta
+  if (out.valid && fix != 1 && !fixFieldPresent)
+  {
+    logSystem(String("GPS: valid by sats/hdop (fix field empty) sats=") +
+              String(satsUsed) + " hdop=" + String(hdop, 1));
+  }
+
   return true;
 }
 
 static const char *pickStartCmd()
 {
+  // ingen tid -> cold (snabbt in -> men ofta sämre TTFF)
   if (!timeIsValid())
-    return "AT+CGNSCOLD"; // ingen tid -> cold
+    return "AT+CGNSCOLD";
 
+  // tid finns -> warm även om vi inte har fix i RAM
   if (!g_hasFix)
-    return "AT+CGNSWARM"; // tid finns -> warm även utan fix
+    return "AT+CGNSWARM";
 
   uint32_t age = millis() - g_lastFixAtMs;
   if (age <= GPS_HOT_MAX_AGE_MS)
@@ -204,14 +251,13 @@ bool gpsPowerOn()
     return false;
   }
 
-  // Select start mode (HOT/WARM/COLD) to reduce TTFF when we have recent fixes
   const char *startCmd = pickStartCmd();
   g_lastStartCmd = startCmd;
 
   bool startOk = atCmdOk(String(startCmd), 2000);
   logSystem(String("GPS: start=") + cmdToMode(startCmd) + " cmd_ok=" + (startOk ? "1" : "0"));
 
-  // Request RMC output when available; tolerated if unsupported
+  // Optional
   atCmdOk("AT+CGNSSEQ=RMC", 2000);
 
   g_gpsOn = true;
@@ -227,7 +273,7 @@ bool gpsPowerOff()
   if (!atCmdOk("AT+CGNSPWR=0", 5000))
   {
     logSystem("GPS: CGNSPWR=0 failed");
-    // mark off anyway to avoid stuck state
+    // mark off anyway
   }
   g_gpsOn = false;
   logSystem("GPS: OFF");
@@ -251,15 +297,16 @@ bool gpsPollOnce(GpsFix &out)
 
   String line;
   bool ok = atCmdGetLine("AT+CGNSINF", "+CGNSINF:", line, 2000);
+  if (!ok)
+    return false;
+
+  // Debug raw (var 10s)
   static uint32_t lastDbg = 0;
   if (millis() - lastDbg > 10000)
   {
     logSystem(String("GPS: CGNSINF raw=") + line);
     lastDbg = millis();
   }
-
-  if (!ok)
-    return false;
 
   if (!parseCgnsinf(line, out))
     return false;
@@ -302,7 +349,6 @@ bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
       return true;
     }
 
-    // If we have an old fix already, keep its age updated for caller
     if (g_hasFix)
     {
       out = g_lastFix;
@@ -316,7 +362,6 @@ bool gpsGetFixWait(GpsFix &out, uint32_t maxWaitMs)
     delay(1000);
   }
 
-  // timeout: return last known fix (valid or not) for logging
   if (g_hasFix)
   {
     out = g_lastFix;
