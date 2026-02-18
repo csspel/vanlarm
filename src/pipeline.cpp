@@ -22,12 +22,10 @@ struct PirOutbox
 };
 
 static PirOutbox g_pir;
-
 static volatile uint16_t g_pirIsrCount = 0;
 static volatile uint8_t g_pirIsrMask = 0; // bit0=front, bit1=back
 static uint32_t g_nextEventId = 1;        // TODO: persist i NVS/SD senare
-
-static bool g_alarmGpsSkipUsed = false; // skip GPS EN gång per ALARM-episod
+static bool g_alarmGpsSkipUsed = false;   // skip GPS EN gång per ALARM-episod
 
 static void IRAM_ATTR isrPirFront()
 {
@@ -112,7 +110,7 @@ static uint32_t g_gpsCollectTimeoutMs = 0;
 
 // non-blocking GPS poll control
 static uint32_t g_gpsNextPollMs = 0;
-static constexpr uint32_t GPS_POLL_INTERVAL_MS = 1000UL;
+static uint32_t g_gpsPollIntervalMs = 1000UL; // adaptiv: snabbare när vi har kandidat
 
 static void stepEnter(Step s, uint32_t nowMs)
 {
@@ -122,7 +120,6 @@ static void stepEnter(Step s, uint32_t nowMs)
     switch (s)
     {
     case Step::STEP_DECIDE:
-        // no deadline here
         break;
 
     case Step::STEP_GPS_ON:
@@ -137,7 +134,8 @@ static void stepEnter(Step s, uint32_t nowMs)
 
     case Step::STEP_GPS_COLLECT:
         g_deadlineMs = nowMs + g_gpsCollectTimeoutMs;
-        g_gpsNextPollMs = nowMs; // poll direkt
+        g_gpsNextPollMs = nowMs;      // poll direkt
+        g_gpsPollIntervalMs = 1000UL; // börja lugnt
         break;
 
     case Step::STEP_GPS_OFF:
@@ -238,18 +236,17 @@ void pipelineTick(uint32_t nowMs)
 
     switch (g_step)
     {
-
     // ---------------- DECIDE ----------------
     case Step::STEP_DECIDE:
     {
         const auto &p = currentProfile();
-
         bool commDue = ((int32_t)(nowMs - g_nextCommAtMs) >= 0);
         g_needComm = g_pir.pending || commDue;
 
         // Reset per cycle gps result
         g_gpsHave = false;
         g_gpsFixOk = false;
+        g_gpsFix = GpsFix{};
 
         // GPS-plan
         g_gpsPlan = GpsPlan::NONE;
@@ -271,11 +268,8 @@ void pipelineTick(uint32_t nowMs)
                     if (p.gpsFixWaitMs > 0)
                     {
                         uint32_t waitMs = p.gpsFixWaitMs;
-
-                        // Om vi aldrig haft fix i RAM: ge GNSS mer tid (inomhus kan behöva flera minuter)
                         if (!gpsHasLastFix() && waitMs < 300000UL)
                             waitMs = 300000UL; // 5 min
-
                         g_gpsCollectTimeoutMs = waitMs;
                     }
                 }
@@ -287,11 +281,8 @@ void pipelineTick(uint32_t nowMs)
                 if (p.gpsFixWaitMs > 0)
                 {
                     uint32_t waitMs = p.gpsFixWaitMs;
-
-                    // Om vi aldrig haft fix i RAM: ge GNSS mer tid
                     if (!gpsHasLastFix() && waitMs < 300000UL)
                         waitMs = 300000UL; // 5 min
-
                     g_gpsCollectTimeoutMs = waitMs;
                 }
             }
@@ -327,25 +318,30 @@ void pipelineTick(uint32_t nowMs)
 
     case Step::STEP_GPS_COLLECT:
     {
-        // Non-blocking: poll CGNSINF ungefär 1 Hz tills fix eller deadline.
+        // Non-blocking: poll CGNSINF tills valid (stabilitet+quality gate) eller deadline.
         if ((int32_t)(nowMs - g_gpsNextPollMs) >= 0)
         {
-            g_gpsNextPollMs = nowMs + GPS_POLL_INTERVAL_MS;
+            g_gpsNextPollMs = nowMs + g_gpsPollIntervalMs;
 
             GpsFix fx;
             bool ok = gpsPollOnce(fx);
-            if (ok && fx.valid)
+
+            if (ok)
             {
-                g_gpsFix = fx;
-                g_gpsFixOk = true;
-                g_gpsHave = true;
-                logSystem(String("GPS: FIX OK lat=") + String(g_gpsFix.lat, 6) +
-                          " lon=" + String(g_gpsFix.lon, 6) +
-                          " alt=" + String(g_gpsFix.alt_m, 1) +
-                          " spd=" + String(g_gpsFix.speed_kmh, 1) +
-                          " fix_mode=" + String(g_gpsFix.fix_mode));
-                stepEnter(Step::STEP_GPS_OFF, nowMs);
-                break;
+                // Adaptiv poll: när vi ser kandidat, poll:a snabbare så vi snabbare får 2 stabila prover
+                if (fx.candidate && !fx.valid)
+                {
+                    g_gpsPollIntervalMs = 500UL;
+                }
+
+                if (fx.valid)
+                {
+                    g_gpsFix = fx;
+                    g_gpsFixOk = true;
+                    g_gpsHave = true;
+                    stepEnter(Step::STEP_GPS_OFF, nowMs);
+                    break;
+                }
             }
         }
 
@@ -354,11 +350,7 @@ void pipelineTick(uint32_t nowMs)
             // timeout: fortsätt ändå utan GPS
             g_gpsHave = false;
             g_gpsFixOk = false;
-            logSystem(String("GPS: FIX OK lat=") + String(g_gpsFix.lat, 6) +
-                      " lon=" + String(g_gpsFix.lon, 6) +
-                      " alt=" + String(g_gpsFix.alt_m, 1) +
-                      " spd=" + String(g_gpsFix.speed_kmh, 1) +
-                      " fix_mode=" + String(g_gpsFix.fix_mode));
+            logSystem("GPS: timeout (no valid fix)");
             stepEnter(Step::STEP_GPS_OFF, nowMs);
         }
         break;
@@ -385,7 +377,6 @@ void pipelineTick(uint32_t nowMs)
             stepEnter(Step::STEP_MQTT_CONNECT, nowMs);
             break;
         }
-
         if (stepTimedOut(nowMs))
         {
             const auto &p = currentProfile();
