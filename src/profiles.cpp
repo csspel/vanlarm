@@ -4,17 +4,34 @@
 // En enda källa för alla intervall.
 // Justera här – så följer main.cpp automatiskt med.
 static ProfileConfig profileTable[] = {
-    // TRAVEL: GPS ofta, uplink var 5 min (batch kommer senare)
-    {ProfileId::TRAVEL, "TRAVEL", 10 * 1000UL, 5 * 60 * 1000UL, 0, 5 * 1000UL, false},
+    // TRAVEL: GPS ofta (men uplink avgör hur ofta du faktiskt skickar), PIR normalt AV i travel
+    {ProfileId::TRAVEL, "TRAVEL",
+     10 * 1000UL,     // gpsIntervalMs (används inte fullt ut i pipeline just nu)
+     5 * 60 * 1000UL, // commIntervalMs (styr i praktiken när GPS tas/skickas)
+     30 * 1000UL,     // gpsFixWaitMs  (MÅSTE vara >0 annars blir det ingen GPS)
+     false, false},   // pirFront, pirBack
 
-    // PARKED: GPS single var 5 min, uplink var 5 min
-    {ProfileId::PARKED, "PARKED", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, 10 * 1000UL, false},
+    // PARKED: GPS var 5 min, PIR på (om du vill övervaka i parked)
+    {ProfileId::PARKED, "PARKED",
+     5 * 60 * 1000UL,
+     5 * 60 * 1000UL,
+     60 * 1000UL,
+     true, true},
 
-    // ALARM: GPS single var 5 min (backup om PIR missar), uplink var 5 min
-    {ProfileId::ALARM, "ALARM", 5 * 60 * 1000UL, 5 * 60 * 1000UL, 60 * 1000UL, 10 * 1000UL, true},
+    // ALARM: GPS som backup + PIR på
+    {ProfileId::ALARM, "ALARM",
+     5 * 60 * 1000UL,
+     5 * 60 * 1000UL,
+     60 * 1000UL,
+     true, true},
 
-    // STOLEN: vill spåra — GPS single + uplink tätare
-    {ProfileId::STOLEN, "STOLEN", 2 * 60 * 1000UL, 2 * 60 * 1000UL, 60 * 1000UL, 6 * 1000UL, false}};
+    // STOLEN: tätare spårning, PIR kan vara vad du vill (jag sätter av här)
+    {ProfileId::STOLEN, "STOLEN",
+     2 * 60 * 1000UL,
+     2 * 60 * 1000UL,
+     60 * 1000UL,
+     false, false},
+};
 
 static ProfileId currentId = ProfileId::PARKED;
 
